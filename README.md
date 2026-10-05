@@ -1,7 +1,9 @@
 # Real-Time Financial Fraud Detection System (LightGBM & AWS Architecture)
 
 [![Pipeline CI](https://github.com/AnishDorke/aws-financial-fraud-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/AnishDorke/aws-financial-fraud-detection/actions/workflows/ci.yml)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://aws-financial-fraud-detection.streamlit.app/)
 
+🔗 **Live Interactive App:** [https://aws-financial-fraud-detection.streamlit.app/](https://aws-financial-fraud-detection.streamlit.app/)
 An end-to-end, leak-free machine learning system designed to detect fraudulent financial transactions in real time while maintaining operational alert capacity for Security Operations Center (SOC) review teams.
 
 ---
