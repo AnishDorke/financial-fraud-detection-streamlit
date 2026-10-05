@@ -2,19 +2,22 @@
 import pandas as pd
 import numpy as np
 import altair as alt
-from sklearn.metrics import precision_recall_curve, auc, roc_auc_score, confusion_matrix
+from pathlib import Path
+from sklearn.metrics import precision_recall_curve, auc, roc_auc_score
 import lightgbm as lgb
+import time
 
-BVDU_LOGO_URL = "https://upload.wikimedia.org/wikipedia/en/e/e0/Bharati_Vidyapeeth_logo.png"
+LOGO_PATH = Path("assets/logo.png")
+ICON_TARGET = str(LOGO_PATH) if LOGO_PATH.exists() else "https://upload.wikimedia.org/wikipedia/en/e/e0/Bharati_Vidyapeeth_logo.png"
 
 st.set_page_config(
-    page_title="Financial Fraud Detection System (AWS ML Architecture)",
-    page_icon=BVDU_LOGO_URL,
+    page_title="Fraud Detection System",
+    page_icon=ICON_TARGET,
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Styling and Badge Contracts (Zero Emojis)
+# Clean, Solar theme styling with zero emojis
 st.markdown("""
 <style>
     .metric-card {
@@ -33,7 +36,7 @@ st.markdown("""
 ACTION_COLORS = ["#E05656", "#F2C94C", "#2F80ED"]
 ACTION_DOMAIN = ["Block", "Review", "Approve"]
 
-# Ingestion Engine with Contamination (15% to 28% Unclean Records)
+# Ingestion with 15% to 28% realistic contamination
 def generate_unclean_dataset(n_rows: int = 1500) -> pd.DataFrame:
     np.random.seed(int(pd.Timestamp.now().timestamp()) % 100000)
     steps = np.sort(np.random.randint(1, 35, size=n_rows))
@@ -68,13 +71,12 @@ def generate_unclean_dataset(n_rows: int = 1500) -> pd.DataFrame:
         "isFraud": is_fraud
     })
 
-    # Contaminate 15% to 28% of rows
     contam_pct = np.random.uniform(0.15, 0.28)
     n_contam = int(n_rows * contam_pct)
     contam_idx = np.random.choice(n_rows, size=n_contam, replace=False)
 
     for idx in contam_idx:
-        issue = np.random.choice(["null_val", "negative_amount", "negative_balance", "duplicate_row"])
+        issue = np.random.choice(["null_val", "negative_amount", "negative_balance"])
         if issue == "null_val":
             col = np.random.choice(["amount", "oldbalanceOrg", "newbalanceDest"])
             df.loc[idx, col] = np.nan
@@ -83,14 +85,10 @@ def generate_unclean_dataset(n_rows: int = 1500) -> pd.DataFrame:
         elif issue == "negative_balance":
             df.loc[idx, "newbalanceOrig"] = -abs(df.loc[idx, "newbalanceOrig"])
 
-    # Inject duplicates
-    n_dupes = max(2, int(n_rows * 0.03))
-    dupe_rows = df.sample(n=n_dupes, replace=True)
-    df = pd.concat([df, dupe_rows], ignore_index=True)
+    dupe_rows = df.sample(n=max(2, int(n_rows * 0.03)), replace=True)
+    return pd.concat([df, dupe_rows], ignore_index=True)
 
-    return df
-
-# Initialize Session State
+# State Inits
 if "raw_df" not in st.session_state:
     st.session_state["raw_df"] = generate_unclean_dataset(1500)
 if "cleaned_df" not in st.session_state:
@@ -103,82 +101,139 @@ if "test_df" not in st.session_state:
     st.session_state["test_df"] = None
 if "trained_model" not in st.session_state:
     st.session_state["trained_model"] = None
+if "scored_batch" not in st.session_state:
+    st.session_state["scored_batch"] = None
+if "pipeline_complete" not in st.session_state:
+    st.session_state["pipeline_complete"] = False
+if "current_nav" not in st.session_state:
+    st.session_state["current_nav"] = "Stage 1: Continuous Data Ingestion"
 
-# Sidebar Navigation
-st.sidebar.title("Navigation")
-nav_section = st.sidebar.radio(
-    "Select View:",
-    [
-        "Executive Dashboard",
-        "Stage 1: Continuous Data Ingestion",
-        "Stage 2: Cleaning and Data Validation",
-        "Stage 3: Exploratory Data Analysis",
-        "Stage 4: Feature Engineering",
-        "Stage 5: Imbalance Handling and Splitting",
-        "Stage 6: Model Training and Evaluation",
-        "Stage 7: Operational Prediction and Flagging"
-    ]
-)
+# Navigation definition: stages 1 to 7 first, Dashboard separate at the bottom
+STAGES = [
+    "Stage 1: Continuous Data Ingestion",
+    "Stage 2: Cleaning and Data Validation",
+    "Stage 3: Exploratory Data Analysis",
+    "Stage 4: Feature Engineering",
+    "Stage 5: Imbalance Handling and Splitting",
+    "Stage 6: Model Training and Evaluation",
+    "Stage 7: Operational Prediction and Flagging",
+    "Dashboard"
+]
 
-# -------------------------------------------------------------
-# EXECUTIVE DASHBOARD
-# -------------------------------------------------------------
-if nav_section == "Executive Dashboard":
-    st.title("Financial Fraud Telemetry and Operational Dashboard")
-    st.markdown("Centralized intelligence portal tracking active pipeline metrics, risk distributions, and model performance.")
+def run_end_to_end_pipeline():
+    progress_bar = st.sidebar.progress(0.0)
+    status_text = st.sidebar.empty()
 
-    current_data = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
-    has_model = st.session_state["trained_model"] is not None
+    # Stage 1: Ingestion
+    status_text.text("Ingesting transactions...")
+    raw = generate_unclean_dataset(2500)
+    st.session_state["raw_df"] = raw
+    progress_bar.progress(0.14)
+    time.sleep(0.15)
 
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    total_tx = len(current_data)
-    total_vol = current_data["amount"].abs().sum() if "amount" in current_data else 0.0
-    confirmed_fraud = int(current_data["isFraud"].sum()) if "isFraud" in current_data else 0
-    fraud_rate = (confirmed_fraud / max(1, total_tx)) * 100
+    # Stage 2: Cleaning
+    status_text.text("Cleaning and validating...")
+    cleaned = raw.drop_duplicates()
+    for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
+        if col in cleaned and cleaned[col].isna().sum() > 0:
+            cleaned[col] = cleaned[col].fillna(cleaned[col].median())
+    cleaned = cleaned.dropna()
+    for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
+        cleaned[col] = cleaned[col].abs()
+    st.session_state["cleaned_df"] = cleaned
+    progress_bar.progress(0.28)
+    time.sleep(0.15)
 
-    kpi1.metric("Active Dataset Volume", f"{total_tx:,} records")
-    kpi2.metric("Gross Transaction Volume", f"${total_vol:,.2f}")
-    kpi3.metric("Confirmed Fraud Cases", f"{confirmed_fraud:,} ({fraud_rate:.2f}%)")
-    kpi4.metric("Model Inference Engine", "Active (LightGBM)" if has_model else "Standby (Pre-training)")
+    # Stage 4: Feature Engineering
+    status_text.text("Extracting features...")
+    feat = cleaned.copy()
+    feat["balance_orig_diff"] = feat["oldbalanceOrg"] - feat["newbalanceOrig"] - feat["amount"]
+    feat["balance_dest_diff"] = feat["newbalanceDest"] - feat["oldbalanceDest"] - feat["amount"]
+    feat["hour_of_day"] = feat["step"] % 24
+    feat["orig_hist_count"] = feat.groupby("nameOrig").cumcount()
+    feat["orig_hist_mean_amount"] = feat.groupby("nameOrig")["amount"].transform("mean")
+    feat["dest_max_amount"] = feat.groupby("nameDest")["amount"].transform("max")
+    st.session_state["featured_df"] = feat
+    progress_bar.progress(0.42)
+    time.sleep(0.15)
 
-    st.markdown("---")
+    # Stage 5: Splitting
+    status_text.text("Chronological splitting...")
+    max_step = int(feat["step"].max())
+    split_step = max(1, int(max_step * 0.75))
+    train_mask = feat["step"] <= split_step
+    train_df = feat[train_mask]
+    test_df = feat[~train_mask]
+    st.session_state["train_df"] = train_df
+    st.session_state["test_df"] = test_df
+    progress_bar.progress(0.57)
+    time.sleep(0.15)
 
-    dash_col1, dash_col2 = st.columns(2)
-    with dash_col1:
-        st.subheader("Gross Financial Exposure by Channel")
-        if "type" in current_data and "amount" in current_data:
-            vol_chart = alt.Chart(current_data).mark_bar(color="#F2994A").encode(
-                x=alt.X("type:N", title="Transaction Channel", sort="-y"),
-                y=alt.Y("sum(amount):Q", title="Aggregated Exposure ($)"),
-                tooltip=["type", "sum(amount)"]
-            ).properties(height=320)
-            st.altair_chart(vol_chart, use_container_width=True)
+    # Stage 6: Model Training
+    status_text.text("Training LightGBM model...")
+    feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
+                    "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
+    X_train, y_train = train_df[feature_cols], train_df["isFraud"]
+    X_test, y_test = test_df[feature_cols], test_df["isFraud"]
+    scale_pos = (len(y_train) - y_train.sum()) / max(1, y_train.sum())
 
-    with dash_col2:
-        st.subheader("Fraud Count by Channel Concentration")
-        if "type" in current_data and "isFraud" in current_data:
-            fraud_sub = current_data[current_data["isFraud"] == 1]
-            if len(fraud_sub) > 0:
-                count_chart = alt.Chart(fraud_sub).mark_bar(color="#E05656").encode(
-                    x=alt.X("type:N", title="Transaction Channel", sort="-y"),
-                    y=alt.Y("count():Q", title="Fraud Incident Count"),
-                    tooltip=["type", "count()"]
-                ).properties(height=320)
-                st.altair_chart(count_chart, use_container_width=True)
-            else:
-                st.info("No fraud incidents detected in current dataset view.")
+    clf = lgb.LGBMClassifier(
+        n_estimators=80,
+        learning_rate=0.06,
+        scale_pos_weight=scale_pos,
+        random_state=42,
+        verbose=-1
+    )
+    clf.fit(X_train, y_train)
+    preds = clf.predict_proba(X_test)[:, 1]
+    precision, recall, _ = precision_recall_curve(y_test, preds)
+    st.session_state["trained_model"] = clf
+    st.session_state["pr_auc"] = float(auc(recall, precision))
+    st.session_state["roc_auc"] = float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else 0.5
+    st.session_state["eval_preds"] = preds
+    st.session_state["eval_y"] = y_test
+    progress_bar.progress(0.71)
+    time.sleep(0.15)
 
-    st.subheader("Automated Risk Summary and Policy Governance")
-    st.markdown(f"""
-    - **Current Data Health**: Pipeline currently loaded with **{total_tx:,}** transactions across **{len(current_data.columns)}** schema columns.
-    - **Primary Vulnerability**: Critical loss patterns remain concentrated in **TRANSFER** and **CASH_OUT** routes.
-    - **Operational Readiness**: {'Model trained on active dataset. Alert capacity calibration enabled in Stage 7.' if has_model else 'Model not yet trained on active session data. Proceed to Stage 6 to generate PR-AUC calibration metrics.'}
-    """)
+    # Stage 7: Scoring
+    status_text.text("Scoring operations...")
+    scoring_batch = feat.copy()
+    scoring_scores = clf.predict_proba(scoring_batch[feature_cols])[:, 1]
+    scoring_batch["fraud_score"] = np.round(scoring_scores, 4)
+    scoring_batch["audit_action"] = pd.cut(
+        scoring_batch["fraud_score"],
+        bins=[-0.1, 0.40, 0.80, 1.0],
+        labels=["Approve", "Review", "Block"]
+    )
+    st.session_state["scored_batch"] = scoring_batch
+    progress_bar.progress(1.0)
+    time.sleep(0.15)
+
+    st.session_state["pipeline_complete"] = True
+    st.session_state["current_nav"] = "Dashboard"
+    status_text.text("All stages complete!")
+    st.rerun()
+
+# Sidebar: Title Navigation
+st.sidebar.title("Fraud Detection System")
+
+current_index = STAGES.index(st.session_state["current_nav"]) if st.session_state["current_nav"] in STAGES else 0
+selected_nav = st.sidebar.radio("Navigation Menu:", STAGES, index=current_index)
+st.session_state["current_nav"] = selected_nav
+
+# Bottom-left automation controls
+st.sidebar.markdown("---")
+auto_mode = st.sidebar.toggle("Automatic Pipeline Mode", value=False)
+
+if auto_mode:
+    st.sidebar.caption("Auto-execution enabled. Clicking the button below runs all 7 stages sequentially and loads the dashboard.")
+    if st.sidebar.button("Execute Full Pipeline", use_container_width=True):
+        run_end_to_end_pipeline()
 
 # -------------------------------------------------------------
 # STAGE 1: INGESTION
 # -------------------------------------------------------------
-elif nav_section == "Stage 1: Continuous Data Ingestion":
+if selected_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
     st.markdown("Unified ingestion endpoint. Define record volume or upload an external batch. Injects synthetic anomalies (15% to 28%) for realistic pipeline validation.")
 
@@ -190,6 +245,8 @@ elif nav_section == "Stage 1: Continuous Data Ingestion":
             st.session_state["cleaned_df"] = None
             st.session_state["featured_df"] = None
             st.session_state["trained_model"] = None
+            st.session_state["scored_batch"] = None
+            st.session_state["pipeline_complete"] = False
             st.success(f"Ingested {len(st.session_state['raw_df']):,} records containing realistic data anomalies.")
 
     with ctrl_col2:
@@ -199,6 +256,8 @@ elif nav_section == "Stage 1: Continuous Data Ingestion":
             st.session_state["cleaned_df"] = None
             st.session_state["featured_df"] = None
             st.session_state["trained_model"] = None
+            st.session_state["scored_batch"] = None
+            st.session_state["pipeline_complete"] = False
             st.success(f"Uploaded and ingested {len(st.session_state['raw_df']):,} rows from external feed.")
 
     st.subheader(f"Current Ingested Raw Dataset ({len(st.session_state['raw_df']):,} Total Records)")
@@ -207,7 +266,7 @@ elif nav_section == "Stage 1: Continuous Data Ingestion":
 # -------------------------------------------------------------
 # STAGE 2: CLEANING & VALIDATION
 # -------------------------------------------------------------
-elif nav_section == "Stage 2: Cleaning and Data Validation":
+elif selected_nav == "Stage 2: Cleaning and Data Validation":
     st.title("Stage 2: Data Cleaning and Integrity Audit")
     st.markdown("Examine unclean records (null values, negative balances, duplicates) and execute adaptive sanitization rules.")
 
@@ -224,22 +283,13 @@ elif nav_section == "Stage 2: Cleaning and Data Validation":
     c4.metric("Duplicate Rows", f"{dupes:,}")
 
     if st.button("Run Data Cleaning and Sanitization"):
-        cleaned = raw.copy()
-        cleaned = cleaned.drop_duplicates()
-
-        # Handle null values: impute if voluminous, drop if minimal
-        if cleaned.isna().sum().sum() > 0:
-            for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
-                if col in cleaned and cleaned[col].isna().sum() > 0:
-                    cleaned[col] = cleaned[col].fillna(cleaned[col].median())
-            cleaned = cleaned.dropna()
-
-        # Rule-based filtering: absolute negative amounts
-        cleaned["amount"] = cleaned["amount"].abs()
-        cleaned["oldbalanceOrg"] = cleaned["oldbalanceOrg"].abs()
-        cleaned["newbalanceOrig"] = cleaned["newbalanceOrig"].abs()
-        cleaned["oldbalanceDest"] = cleaned["oldbalanceDest"].abs()
-        cleaned["newbalanceDest"] = cleaned["newbalanceDest"].abs()
+        cleaned = raw.copy().drop_duplicates()
+        for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
+            if col in cleaned and cleaned[col].isna().sum() > 0:
+                cleaned[col] = cleaned[col].fillna(cleaned[col].median())
+        cleaned = cleaned.dropna()
+        for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
+            cleaned[col] = cleaned[col].abs()
 
         st.session_state["cleaned_df"] = cleaned
         st.success(f"Cleaning completed. Retained {len(cleaned):,} valid records.")
@@ -252,8 +302,8 @@ elif nav_section == "Stage 2: Cleaning and Data Validation":
 # -------------------------------------------------------------
 # STAGE 3: EXPLORATORY DATA ANALYSIS (EDA)
 # -------------------------------------------------------------
-elif nav_section == "Stage 3: Exploratory Data Analysis":
-    st.title("Stage 3: Exploratory Data Analysis (EDA)")
+elif selected_nav == "Stage 3: Exploratory Data Analysis":
+    st.title("Stage 3: Exploratory Data Analysis")
     st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
@@ -262,7 +312,7 @@ elif nav_section == "Stage 3: Exploratory Data Analysis":
     with eda_c1:
         st.subheader("Transaction Volume by Type and Target")
         chart_tx = alt.Chart(df).mark_bar().encode(
-            x=alt.X("type:N", title="Transaction Channel"),
+            x=alt.X("type:N", title="Transaction Channel", axis=alt.Axis(labelAngle=0)),
             y=alt.Y("count():Q", title="Volume"),
             color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
             tooltip=["type", "count()"]
@@ -272,7 +322,7 @@ elif nav_section == "Stage 3: Exploratory Data Analysis":
     with eda_c2:
         st.subheader("Amount Distribution by Target Class")
         chart_box = alt.Chart(df).mark_boxplot().encode(
-            x=alt.X("isFraud:N", title="Class (0 = Legitimate, 1 = Fraud)"),
+            x=alt.X("isFraud:N", title="Class (0 = Legitimate, 1 = Fraud)", axis=alt.Axis(labelAngle=0)),
             y=alt.Y("amount:Q", scale=alt.Scale(type="log"), title="Transaction Amount ($)"),
             color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]))
         ).properties(height=320)
@@ -280,7 +330,7 @@ elif nav_section == "Stage 3: Exploratory Data Analysis":
 
     st.subheader("Diurnal Transaction Velocity by Simulation Step")
     line_step = alt.Chart(df).mark_line(color="#F2994A").encode(
-        x=alt.X("step:Q", title="Simulation Step (Hour)"),
+        x=alt.X("step:Q", title="Simulation Step (Hour)", axis=alt.Axis(labelAngle=0)),
         y=alt.Y("count():Q", title="Transaction Throughput"),
         tooltip=["step", "count()"]
     ).properties(height=260)
@@ -289,8 +339,8 @@ elif nav_section == "Stage 3: Exploratory Data Analysis":
 # -------------------------------------------------------------
 # STAGE 4: FEATURE ENGINEERING
 # -------------------------------------------------------------
-elif nav_section == "Stage 4: Feature Engineering":
-    st.title("Stage 4: Leak-Free Feature Engineering (V3.1)")
+elif selected_nav == "Stage 4: Feature Engineering":
+    st.title("Stage 4: Leak-Free Feature Engineering")
     st.markdown("Extract delta balances, temporal components, and leak-free historical behavioral metrics.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
@@ -305,25 +355,22 @@ elif nav_section == "Stage 4: Feature Engineering":
             feat["orig_hist_mean_amount"] = feat.groupby("nameOrig")["amount"].transform("mean")
             feat["dest_max_amount"] = feat.groupby("nameDest")["amount"].transform("max")
             st.session_state["featured_df"] = feat
-            st.success(f"Feature engineering completed across {feat.shape[1]} total dimensions.")
+            st.success(f"Feature engineering completed across {feat.shape[1]} dimensions.")
 
     if st.session_state["featured_df"] is not None:
         feat_df = st.session_state["featured_df"]
-        st.subheader("Engineered Feature Signals (Separate Table)")
-        eng_cols = ["step", "nameOrig", "amount", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
+        st.subheader("Engineered Feature Signals")
+        eng_cols = ["step", "nameOrig", "amount", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount", "isFraud"]
         st.dataframe(feat_df[eng_cols], use_container_width=True, height=350)
-
-        st.subheader("Feature Variance and Statistics")
-        st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "dest_max_amount"]].describe(), use_container_width=True)
     else:
         st.info("Click 'Generate Feature Transformations' above to compute feature tables.")
 
 # -------------------------------------------------------------
 # STAGE 5: IMBALANCE HANDLING & SPLITTING
 # -------------------------------------------------------------
-elif nav_section == "Stage 5: Imbalance Handling and Splitting":
-    st.title("Stage 5: Imbalance Handling and Chronological Splitting")
-    st.markdown("Partition data strictly by step to preserve causal temporal ordering and handle class imbalance.")
+elif selected_nav == "Stage 5: Imbalance Handling and Splitting":
+    st.title("Stage 5: Imbalance Handling and Splitting")
+    st.markdown("Partition data strictly by simulation step to preserve causal temporal ordering and prevent lookahead bias.")
 
     if st.session_state["featured_df"] is None:
         st.warning("Please complete feature generation in Stage 4 first.")
@@ -335,9 +382,7 @@ elif nav_section == "Stage 5: Imbalance Handling and Splitting":
         split_c1, split_c2 = st.columns([1, 2])
         with split_c1:
             split_step = st.slider("Select Chronological Split Step:", min_value=1, max_value=max_step, value=default_split)
-            imbalance_method = st.selectbox("Imbalance Strategy:", ["Cost-Sensitive Class Weighting (scale_pos_weight)", "Synthetic Minority Oversampling (Simulated)"])
-            
-            if st.button("Apply Partition and Strategy"):
+            if st.button("Apply Partition"):
                 train_mask = df["step"] <= split_step
                 st.session_state["train_df"] = df[train_mask]
                 st.session_state["test_df"] = df[~train_mask]
@@ -349,17 +394,14 @@ elif nav_section == "Stage 5: Imbalance Handling and Splitting":
                 test_len = len(st.session_state["test_df"])
                 train_fraud = int(st.session_state["train_df"]["isFraud"].sum())
                 test_fraud = int(st.session_state["test_df"]["isFraud"].sum())
-
                 st.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
-                st.metric("Out-of-Time Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
-                scale_pos = (train_len - train_fraud) / max(1, train_fraud)
-                st.caption(f"Calculated `scale_pos_weight` multiplier: **{scale_pos:.2f}**")
+                st.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
 
 # -------------------------------------------------------------
 # STAGE 6: MODEL TRAINING & TELEMETRY
 # -------------------------------------------------------------
-elif nav_section == "Stage 6: Model Training and Evaluation":
-    st.title("Stage 6: Model Training and Telemetry")
+elif selected_nav == "Stage 6: Model Training and Evaluation":
+    st.title("Stage 6: Model Training and Evaluation")
     st.markdown("Train LightGBM on the active training partition and evaluate precision-recall curves.")
 
     if st.session_state["train_df"] is None:
@@ -372,29 +414,23 @@ elif nav_section == "Stage 6: Model Training and Evaluation":
             with st.spinner("Fitting LightGBM classifier..."):
                 feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                                 "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
-                
                 X_train, y_train = train_df[feature_cols], train_df["isFraud"]
                 X_test, y_test = test_df[feature_cols], test_df["isFraud"]
-
                 scale_pos = (len(y_train) - y_train.sum()) / max(1, y_train.sum())
 
                 clf = lgb.LGBMClassifier(
-                    n_estimators=75,
+                    n_estimators=80,
                     learning_rate=0.06,
                     scale_pos_weight=scale_pos,
                     random_state=42,
                     verbose=-1
                 )
                 clf.fit(X_train, y_train)
-
                 preds = clf.predict_proba(X_test)[:, 1]
                 precision, recall, _ = precision_recall_curve(y_test, preds)
-                pr_auc_score = auc(recall, precision)
-                roc_auc_val = roc_auc_score(y_test, preds) if len(np.unique(y_test)) > 1 else 0.5
-
                 st.session_state["trained_model"] = clf
-                st.session_state["pr_auc"] = pr_auc_score
-                st.session_state["roc_auc"] = roc_auc_val
+                st.session_state["pr_auc"] = float(auc(recall, precision))
+                st.session_state["roc_auc"] = float(roc_auc_score(y_test, preds)) if len(np.unique(y_test)) > 1 else 0.5
                 st.session_state["eval_preds"] = preds
                 st.session_state["eval_y"] = y_test
                 st.success("Model training and out-of-time evaluation completed.")
@@ -404,26 +440,24 @@ elif nav_section == "Stage 6: Model Training and Evaluation":
             m1.metric("Precision-Recall AUC (PR-AUC)", f"{st.session_state['pr_auc']:.4f}")
             m2.metric("ROC-AUC", f"{st.session_state['roc_auc']:.4f}")
 
-            # Plot PR curve
             precision, recall, _ = precision_recall_curve(st.session_state["eval_y"], st.session_state["eval_preds"])
             pr_data = pd.DataFrame({"Recall": recall, "Precision": precision})
             pr_chart = alt.Chart(pr_data).mark_line(color="#2F80ED").encode(
-                x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1])),
-                y=alt.Y("Precision:Q", scale=alt.Scale(domain=[0, 1]))
+                x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("Precision:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0))
             ).properties(height=300, title="Precision-Recall Trajectory")
             st.altair_chart(pr_chart, use_container_width=True)
 
 # -------------------------------------------------------------
 # STAGE 7: PREDICTION & DECISION QUEUE
 # -------------------------------------------------------------
-elif nav_section == "Stage 7: Operational Prediction and Flagging":
-    st.title("Stage 7: Real-Time Fraud Prediction and Operational Flagging")
+elif selected_nav == "Stage 7: Operational Prediction and Flagging":
+    st.title("Stage 7: Operational Prediction and Flagging")
     st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve).")
 
     source_data = st.session_state["featured_df"] if st.session_state["featured_df"] is not None else st.session_state["raw_df"]
     scoring_batch = source_data.copy().head(500)
 
-    # Score transactions
     if st.session_state["trained_model"] is not None and "balance_orig_diff" in scoring_batch:
         feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                         "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
@@ -445,6 +479,7 @@ elif nav_section == "Stage 7: Operational Prediction and Flagging":
         bins=[-0.1, 0.40, 0.80, 1.0],
         labels=["Approve", "Review", "Block"]
     )
+    st.session_state["scored_batch"] = scoring_batch
 
     t1, t2, t3 = st.columns(3)
     n_approve = int((scoring_batch["audit_action"] == "Approve").sum())
@@ -462,8 +497,8 @@ elif nav_section == "Stage 7: Operational Prediction and Flagging":
     selection = alt.selection_point(fields=["audit_action"], bind="legend")
 
     scatter_chart = alt.Chart(scoring_batch).mark_circle(size=70).encode(
-        x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log")),
-        y=alt.Y("fraud_score:Q", title="Fraud Risk Score"),
+        x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("fraud_score:Q", title="Fraud Risk Score", axis=alt.Axis(labelAngle=0)),
         color=alt.Color(
             "audit_action:N",
             scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
@@ -475,19 +510,66 @@ elif nav_section == "Stage 7: Operational Prediction and Flagging":
 
     st.altair_chart(scatter_chart, use_container_width=True)
 
-    st.subheader("Flagged Accounts and Decision Ledger")
+# -------------------------------------------------------------
+# DASHBOARD
+# -------------------------------------------------------------
+elif selected_nav == "Dashboard":
+    st.title("Executive Dashboard")
 
-    def style_action(val):
-        if val == "Block":
-            return "background-color: rgba(224, 86, 86, 0.35); font-weight: bold; color: #E05656;"
-        elif val == "Review":
-            return "background-color: rgba(242, 201, 76, 0.35); font-weight: bold; color: #F2C94C;"
-        elif val == "Approve":
-            return "background-color: rgba(47, 128, 237, 0.25); color: #2F80ED;"
-        return ""
+    if not st.session_state["pipeline_complete"] and st.session_state["scored_batch"] is None:
+        st.info("Waiting for pipeline execution to complete. Please complete the stages or enable Automatic Pipeline Mode in the sidebar to view full insights.")
+    else:
+        scored = st.session_state["scored_batch"]
+        total_tx = len(scored)
+        total_vol = float(scored["amount"].sum())
+        n_block = int((scored["audit_action"] == "Block").sum())
+        n_review = int((scored["audit_action"] == "Review").sum())
+        n_approve = int((scored["audit_action"] == "Approve").sum())
+        actual_fraud = int(scored["isFraud"].sum()) if "isFraud" in scored else 0
 
-    st.dataframe(
-        scoring_batch.head(150).style.map(style_action, subset=["audit_action"]),
-        use_container_width=True,
-        height=400
-    )
+        # KPI Cards
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Audited Transactions", f"{total_tx:,}")
+        k2.metric("Total Exposure", f"${total_vol:,.2f}")
+        k3.metric("High Risk Blocked", f"{n_block:,}")
+        k4.metric("Manual Review Queue", f"{n_review:,}")
+
+        st.markdown("---")
+
+        # Visual Analytics: Scatter Plot & Bar Chart
+        col_viz1, col_viz2 = st.columns(2)
+        with col_viz1:
+            st.subheader("Decision Classification Distribution")
+            chart_scatter = alt.Chart(scored).mark_circle(size=60, opacity=0.8).encode(
+                x=alt.X("amount:Q", title="Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("fraud_score:Q", title="Fraud Risk Score", axis=alt.Axis(labelAngle=0)),
+                color=alt.Color("audit_action:N", scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS), legend=alt.Legend(title="Decision Tier")),
+                tooltip=["step", "type", "amount", "fraud_score", "audit_action"]
+            ).properties(height=320)
+            st.altair_chart(chart_scatter, use_container_width=True)
+
+        with col_viz2:
+            st.subheader("Operational Volume by Action Tier")
+            action_counts = scored["audit_action"].value_counts().reset_index()
+            action_counts.columns = ["audit_action", "count"]
+            chart_bar = alt.Chart(action_counts).mark_bar().encode(
+                x=alt.X("audit_action:N", title="Action Category", axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("count:Q", title="Transaction Volume"),
+                color=alt.Color("audit_action:N", scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS), legend=None),
+                tooltip=["audit_action", "count"]
+            ).properties(height=320)
+            st.altair_chart(chart_bar, use_container_width=True)
+
+        st.subheader("Model Decision Telemetry and Ground Truth Comparison")
+        comp_df = pd.DataFrame({
+            "Metric Category": ["Total Audited", "Flagged High Risk (Block)", "Flagged for Human Review", "Cleared (Approve)", "Ground Truth Fraud Instances"],
+            "Count": [total_tx, n_block, n_review, n_approve, actual_fraud],
+            "Percentage": [
+                "100.0%",
+                f"{(n_block / max(1, total_tx)) * 100:.2f}%",
+                f"{(n_review / max(1, total_tx)) * 100:.2f}%",
+                f"{(n_approve / max(1, total_tx)) * 100:.2f}%",
+                f"{(actual_fraud / max(1, total_tx)) * 100:.2f}%"
+            ]
+        })
+        st.table(comp_df)
