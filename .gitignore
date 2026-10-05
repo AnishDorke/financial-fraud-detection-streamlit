@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Raw and generated datasets
+data/raw/
+data/interim/
+data/processed*/
+data/processed_historical*/
+
+# Local environment and secrets
+.env
+*.pem
+*.key
+.aws/
+
+# Generated reports and temporary files
+reports/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Obsolete model artifacts
+models/*.joblib
+models/*_decision_threshold.json
+models/decision_threshold.json
