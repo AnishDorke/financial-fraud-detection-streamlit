@@ -25,3 +25,6 @@ reports/
 models/*.joblib
 models/*_decision_threshold.json
 models/decision_threshold.json
+
+# Archived experimental scripts
+archive/
