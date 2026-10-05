@@ -13,6 +13,7 @@ This project implements:
 2. **Feature Ablation Benchmarking:** Validates the marginal uplift of receiver transaction ceilings against point-in-time baseline features.
 3. **Operational Capacity Thresholding:** Replaces default 0.5 classification cutoffs with review-volume budgets (0.1%, 0.5%, 1.0%) to prioritize precision and prevent investigator alert fatigue.
 4. **Interactive Streamlit Web Dashboard:** Provides single-transaction screening, sequential batch audits with Power BI Solar-themed interactive charts, and model telemetry.
+5. **Unified Audit Orchestrator (`run_pipeline.py`):** Runs automated end-to-end verification covering data schema, temporal boundaries, model loading, parity checks, and alert capacity.
 
 ---
 
@@ -49,6 +50,7 @@ In production fraud operations, an investigation team cannot inspect thousands o
 ├── .gitignore
 ├── README.md
 ├── requirements.txt
+├── run_pipeline.py                   # Master end-to-end audit orchestrator
 ├── app.py                            # Multi-page Streamlit web dashboard
 ├── generate_feed.py                  # Synthetic 15 MB batch feed generator
 │
@@ -57,13 +59,27 @@ In production fraud operations, an investigation team cannot inspect thousands o
 │       ├── lightgbm_historical_v3_1.txt
 │       ├── lightgbm_current_only.txt
 │       └── ablation/
+│           ├── ablation_historical_full.txt
+│           ├── ablation_current_only.txt
+│           └── ablation_historical_without_dest_max.txt
 │
 └── src/
     ├── inference_pipeline.py         # Production inference engine
     ├── prepare_historical_features_v3_1.py
     ├── train_historical_ablation.py
+    ├── train_historical_comparison.py
     ├── evaluate_alert_capacity.py
     ├── validate_data.py
     ├── perform_eda.py
+    ├── inspect_data.py
+    ├── inspect_v3_extremes.py
+    ├── audit_features.py
+    ├── audit_historical_features.py
+    ├── audit_historical_features_v3.py
+    ├── audit_account_reuse.py
+    ├── test_inference_predictions.py
+    ├── test_inference_validation.py
+    ├── verify_full_inference.py
     ├── verify_history_boundaries.py
+    ├── verify_inference_pipeline.py
     └── verify_prediction_parity.py
