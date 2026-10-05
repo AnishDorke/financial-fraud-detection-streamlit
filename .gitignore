@@ -28,3 +28,6 @@ models/decision_threshold.json
 
 # Archived experimental scripts
 archive/
+
+*.csv
+test_batch_feed.csv
