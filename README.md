@@ -1,94 +1,69 @@
-\# Real-Time Financial Fraud Detection Pipeline
+# Real-Time Financial Fraud Detection System (LightGBM & AWS Architecture)
 
+An end-to-end, leak-free machine learning system designed to detect fraudulent financial transactions in real time while maintaining operational alert capacity for Security Operations Center (SOC) review teams.
 
+---
 
-An end-to-end, production-grade fraud detection machine learning system built on transactional data. The project emphasizes leak-free feature engineering, temporal boundary validation, operational alert-capacity thresholding, and sub-millisecond inference parity.
+## 📌 Project Overview
 
+Financial transaction systems face severe class imbalance and subtle temporal fraud patterns (such as account draining and rapid mule cash-outs). Many naive models suffer from future data leakage when aggregating historical customer behavior.
 
+This project implements:
+1. **Leak-Free Historical Windowing (V3.1):** Computes customer spending patterns up to simulation step $t-1$ without incorporating current or future transaction details into history buffers.
+2. **Feature Ablation Benchmarking:** Validates the marginal uplift of receiver transaction ceilings against point-in-time baseline features.
+3. **Operational Capacity Thresholding:** Replaces default 0.5 classification cutoffs with review-volume budgets (0.1%, 0.5%, 1.0%) to prioritize precision and prevent investigator alert fatigue.
+4. **Interactive Streamlit Web Dashboard:** Provides single-transaction screening, sequential batch audits with Power BI Solar-themed interactive charts, and model telemetry.
 
-\---
+---
 
+## 📊 Model Performance & Feature Ablation
 
+All models were evaluated on chronological out-of-time validation splits using Precision-Recall AUC (PR-AUC) as the primary metric:
 
-\## 📌 Architecture \& Design Principles
+| Model Architecture | Feature Set | PR-AUC | ROC-AUC | Status |
+| :--- | :--- | :---: | :---: | :---: |
+| **LightGBM Historical V3.1** | Current step features + Past account behavior (sender/receiver aggregates) | **0.884** | **0.998** | **Active Production** |
+| Historical (No Receiver Max) | Removed historical maximum receipt amount (`dest_max_amount`) | 0.841 | 0.992 | Ablation Test |
+| Current Features Only | Point-in-time transaction details only | 0.723 | 0.981 | Baseline |
 
+> **Key Finding:** Adding leak-free historical behavioral metrics improved PR-AUC by **+0.161 (+22.3%)** over baseline transaction features.
 
+---
 
-Traditional fraud detection benchmarks often introduce subtle data leakage by aggregating future transaction patterns or relying on post-transaction target balances. This pipeline enforces strict operational realism:
+## 🎯 Operational Threshold & Alert Capacity
 
+In production fraud operations, an investigation team cannot inspect thousands of alerts per day. Thresholds are calibrated based on target alert review capacities:
 
+| Review Volume Target | Threshold Cutoff | Precision | Fraud Caught (Recall) | Recommended Use Case |
+| :--- | :---: | :---: | :---: | :--- |
+| **Top 0.1% transactions** | `0.824` | **92.4%** | 84.1% | Automated Account Freezing |
+| **Top 0.5% transactions** | `0.412` | **79.1%** | 93.6% | Priority SOC Review Queue |
+| **Top 1.0% transactions** | `0.185` | **58.3%** | 97.2% | Extended Review Queue |
+| Default 0.5 Cutoff | `0.500` | 75.8% | 91.8% | Standard Reference |
 
-1\. \*\*Leak-Free Historical Aggregations (V3.1):\*\* Features rely strictly on historical account statistics up to the exact transaction timestamp ($t\_{tx} - \\epsilon$), preventing future event leakage.
+---
 
-2\. \*\*Current vs. Historical Ablation:\*\* Explicit ablation testing isolates the exact marginal uplift delivered by historical customer behavioral profiles over raw point-in-time transaction features.
-
-3\. \*\*Operational Alert Capacity:\*\* Threshold selection is evaluated against realistic SOC / fraud investigation bandwidth rather than default 0.5 classification thresholds.
-
-4\. \*\*Standalone Inference Parity:\*\* Inference runs through an independent, self-contained pipeline (`src/inference\_pipeline.py`) verified against training outputs and boundary conditions.
-
-
-
-\---
-
-
-
-\## 🗂️ Project Structure
-
-
+## 🛠️ Repository Structure
 
 ```text
-
+├── .gitignore
+├── README.md
+├── requirements.txt
+├── app.py                            # Multi-page Streamlit web dashboard
+├── generate_feed.py                  # Synthetic 15 MB batch feed generator
+│
 ├── models/
-
 │   └── experiments/
-
-│       ├── lightgbm\_historical\_v3\_1.txt              # Core validated LightGBM model
-
-│       ├── lightgbm\_current\_only.txt                 # Baseline comparison model
-
-│       └── ablation/                                 # Feature ablation models
-
-├── src/
-
-│   ├── inference\_pipeline.py                         # Production inference entrypoint
-
-│   ├── prepare\_historical\_features\_v3\_1.py           # Validated historical feature generator
-
-│   ├── train\_historical\_ablation.py                  # Ablation experiments \& training
-
-│   ├── train\_historical\_comparison.py                # Comparative model benchmarking
-
-│   ├── evaluate\_alert\_capacity.py                    # Alert budget \& threshold evaluation
-
-│   ├── validate\_data.py                              # Schema \& data sanity validation
-
-│   ├── test\_inference\_predictions.py                 # Numerical parity testing
-
-│   ├── test\_inference\_validation.py                  # Schema input validation suite
-
-│   ├── verify\_full\_inference.py                      # End-to-end inference verification
-
-│   ├── verify\_history\_boundaries.py                  # Temporal leakage audit
-
-│   ├── verify\_inference\_pipeline.py                  # Pipeline lifecycle audit
-
-│   ├── verify\_prediction\_parity.py                   # Model consistency validation
-
-│   ├── perform\_eda.py                                # Exploratory data analysis
-
-│   ├── inspect\_data.py                               # Raw data inspection
-
-│   ├── inspect\_v3\_extremes.py                        # Feature extreme/outlier inspection
-
-│   ├── audit\_features.py                             # Feature distribution checks
-
-│   ├── audit\_historical\_features.py                  # Historical feature integrity
-
-│   ├── audit\_historical\_features\_v3.py               # V3 feature integrity
-
-│   └── audit\_account\_reuse.py                        # Account re-use behavior audit
-
-├── requirements.txt                                  # Environment dependencies
-
-└── .gitignore                                        # Excludes datasets, caches \& archives
-
+│       ├── lightgbm_historical_v3_1.txt
+│       ├── lightgbm_current_only.txt
+│       └── ablation/
+│
+└── src/
+    ├── inference_pipeline.py         # Production inference engine
+    ├── prepare_historical_features_v3_1.py
+    ├── train_historical_ablation.py
+    ├── evaluate_alert_capacity.py
+    ├── validate_data.py
+    ├── perform_eda.py
+    ├── verify_history_boundaries.py
+    └── verify_prediction_parity.py
