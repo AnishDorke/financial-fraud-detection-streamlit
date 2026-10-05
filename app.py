@@ -2,58 +2,60 @@
 import pandas as pd
 import numpy as np
 import altair as alt
-from sklearn.metrics import precision_recall_curve, auc, roc_auc_score
+from sklearn.metrics import precision_recall_curve, auc, roc_auc_score, confusion_matrix
 import lightgbm as lgb
+
+BVDU_LOGO_URL = "https://upload.wikimedia.org/wikipedia/en/e/e0/Bharati_Vidyapeeth_logo.png"
 
 st.set_page_config(
     page_title="Financial Fraud Detection System (AWS ML Architecture)",
-    page_icon="🛡️️",
+    page_icon=BVDU_LOGO_URL,
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Solar styling and badge tags
+# Styling and Badge Contracts (Zero Emojis)
 st.markdown("""
 <style>
     .metric-card {
         background-color: #1E222B;
-        border-radius: 8px;
-        padding: 16px;
-        border-left: 5px solid #F2994A;
+        border-radius: 6px;
+        padding: 14px;
+        border-left: 4px solid #F2994A;
         margin-bottom: 12px;
     }
-    .badge-block { color: #E05656; font-weight: bold; }
-    .badge-review { color: #F2C94C; font-weight: bold; }
-    .badge-approve { color: #2F80ED; font-weight: bold; }
+    .badge-block { color: #E05656; font-weight: 700; }
+    .badge-review { color: #F2C94C; font-weight: 700; }
+    .badge-approve { color: #2F80ED; font-weight: 700; }
 </style>
 """, unsafe_allow_html=True)
 
 ACTION_COLORS = ["#E05656", "#F2C94C", "#2F80ED"]
 ACTION_DOMAIN = ["Block", "Review", "Approve"]
 
-# --- DATA GENERATOR ---
-def generate_synthetic_data(n_rows: int = 1500) -> pd.DataFrame:
+# Ingestion Engine with Contamination (15% to 28% Unclean Records)
+def generate_unclean_dataset(n_rows: int = 1500) -> pd.DataFrame:
     np.random.seed(int(pd.Timestamp.now().timestamp()) % 100000)
-    steps = np.sort(np.random.randint(1, 30, size=n_rows))
-    types = np.random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.10, 0.35, 0.05, 0.15])
-    amounts = np.round(np.random.exponential(scale=50000, size=n_rows) + 10, 2)
+    steps = np.sort(np.random.randint(1, 35, size=n_rows))
+    types = np.random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
+    amounts = np.round(np.random.exponential(scale=65000, size=n_rows) + 15.0, 2)
     orig_ids = [f"C{np.random.randint(100000, 999999)}" for _ in range(n_rows)]
     dest_ids = [f"M{np.random.randint(100000, 999999)}" if t == "PAYMENT" else f"C{np.random.randint(100000, 999999)}" for t in types]
-    old_orig = np.round(np.random.exponential(scale=60000, size=n_rows), 2)
-    new_orig = np.maximum(0, old_orig - amounts)
-    old_dest = np.round(np.random.exponential(scale=40000, size=n_rows), 2)
+    old_orig = np.round(np.random.exponential(scale=70000, size=n_rows), 2)
+    new_orig = np.maximum(0.0, old_orig - amounts)
+    old_dest = np.round(np.random.exponential(scale=45000, size=n_rows), 2)
     new_dest = old_dest + amounts
 
-    # Label fraud instances
     is_fraud = np.zeros(n_rows, dtype=int)
-    fraud_idx = np.random.choice(n_rows, size=max(1, int(n_rows * 0.04)), replace=False)
+    fraud_count = max(2, int(n_rows * 0.04))
+    fraud_idx = np.random.choice(n_rows, size=fraud_count, replace=False)
     for i in fraud_idx:
         types[i] = "TRANSFER" if np.random.rand() > 0.5 else "CASH_OUT"
-        amounts[i] = old_orig[i] = np.random.uniform(200000, 850000)
+        amounts[i] = old_orig[i] = float(np.random.uniform(250000, 950000))
         new_orig[i] = 0.0
         is_fraud[i] = 1
 
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "step": steps,
         "type": types,
         "amount": amounts,
@@ -66,204 +68,309 @@ def generate_synthetic_data(n_rows: int = 1500) -> pd.DataFrame:
         "isFraud": is_fraud
     })
 
+    # Contaminate 15% to 28% of rows
+    contam_pct = np.random.uniform(0.15, 0.28)
+    n_contam = int(n_rows * contam_pct)
+    contam_idx = np.random.choice(n_rows, size=n_contam, replace=False)
+
+    for idx in contam_idx:
+        issue = np.random.choice(["null_val", "negative_amount", "negative_balance", "duplicate_row"])
+        if issue == "null_val":
+            col = np.random.choice(["amount", "oldbalanceOrg", "newbalanceDest"])
+            df.loc[idx, col] = np.nan
+        elif issue == "negative_amount":
+            df.loc[idx, "amount"] = -abs(df.loc[idx, "amount"])
+        elif issue == "negative_balance":
+            df.loc[idx, "newbalanceOrig"] = -abs(df.loc[idx, "newbalanceOrig"])
+
+    # Inject duplicates
+    n_dupes = max(2, int(n_rows * 0.03))
+    dupe_rows = df.sample(n=n_dupes, replace=True)
+    df = pd.concat([df, dupe_rows], ignore_index=True)
+
+    return df
+
 # Initialize Session State
 if "raw_df" not in st.session_state:
-    st.session_state["raw_df"] = generate_synthetic_data(1500)
+    st.session_state["raw_df"] = generate_unclean_dataset(1500)
 if "cleaned_df" not in st.session_state:
-    st.session_state["cleaned_df"] = st.session_state["raw_df"].copy()
+    st.session_state["cleaned_df"] = None
 if "featured_df" not in st.session_state:
     st.session_state["featured_df"] = None
+if "train_df" not in st.session_state:
+    st.session_state["train_df"] = None
+if "test_df" not in st.session_state:
+    st.session_state["test_df"] = None
+if "trained_model" not in st.session_state:
+    st.session_state["trained_model"] = None
 
 # Sidebar Navigation
-st.sidebar.title("Pipeline Navigation")
-stage = st.sidebar.radio(
-    "Lifecycle Stages:",
+st.sidebar.title("Navigation")
+nav_section = st.sidebar.radio(
+    "Select View:",
     [
-        "1. Ingestion & Continuous Feed",
-        "2. Cleaning & Validation",
-        "3. Exploratory Data Analysis (EDA)",
-        "4. Feature Engineering & Leak-Free Windowing",
-        "5. Imbalance Handling & Chronological Split",
-        "6. Model Selection & Live Retraining",
-        "7. Real-Time Fraud Prediction & Monitoring"
+        "Executive Dashboard",
+        "Stage 1: Continuous Data Ingestion",
+        "Stage 2: Cleaning and Data Validation",
+        "Stage 3: Exploratory Data Analysis",
+        "Stage 4: Feature Engineering",
+        "Stage 5: Imbalance Handling and Splitting",
+        "Stage 6: Model Training and Evaluation",
+        "Stage 7: Operational Prediction and Flagging"
     ]
 )
 
 # -------------------------------------------------------------
-# 1. INGESTION & CONTINUOUS FEED
+# EXECUTIVE DASHBOARD
 # -------------------------------------------------------------
-if stage == "1. Ingestion & Continuous Feed":
-    st.title("1. Continuous Data Collection & Ingestion")
-    st.markdown("Simulate streaming transactions or generate fresh batch feeds matching the AWS S3/Kinesis schema.")
+if nav_section == "Executive Dashboard":
+    st.title("Financial Fraud Telemetry and Operational Dashboard")
+    st.markdown("Centralized intelligence portal tracking active pipeline metrics, risk distributions, and model performance.")
 
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader("Simulate Ingestion Feed")
-        batch_size = st.slider("Select batch volume (rows):", 500, 5000, len(st.session_state["raw_df"]), step=250)
-        
-        if st.button("🔄 Generate Fresh Incoming Data Batch"):
-            st.session_state["raw_df"] = generate_synthetic_data(batch_size)
-            # Invalidate downstream states so they reflect newly ingested records
-            st.session_state["cleaned_df"] = st.session_state["raw_df"].copy()
+    current_data = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
+    has_model = st.session_state["trained_model"] is not None
+
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    total_tx = len(current_data)
+    total_vol = current_data["amount"].abs().sum() if "amount" in current_data else 0.0
+    confirmed_fraud = int(current_data["isFraud"].sum()) if "isFraud" in current_data else 0
+    fraud_rate = (confirmed_fraud / max(1, total_tx)) * 100
+
+    kpi1.metric("Active Dataset Volume", f"{total_tx:,} records")
+    kpi2.metric("Gross Transaction Volume", f"${total_vol:,.2f}")
+    kpi3.metric("Confirmed Fraud Cases", f"{confirmed_fraud:,} ({fraud_rate:.2f}%)")
+    kpi4.metric("Model Inference Engine", "Active (LightGBM)" if has_model else "Standby (Pre-training)")
+
+    st.markdown("---")
+
+    dash_col1, dash_col2 = st.columns(2)
+    with dash_col1:
+        st.subheader("Gross Financial Exposure by Channel")
+        if "type" in current_data and "amount" in current_data:
+            vol_chart = alt.Chart(current_data).mark_bar(color="#F2994A").encode(
+                x=alt.X("type:N", title="Transaction Channel", sort="-y"),
+                y=alt.Y("sum(amount):Q", title="Aggregated Exposure ($)"),
+                tooltip=["type", "sum(amount)"]
+            ).properties(height=320)
+            st.altair_chart(vol_chart, use_container_width=True)
+
+    with dash_col2:
+        st.subheader("Fraud Count by Channel Concentration")
+        if "type" in current_data and "isFraud" in current_data:
+            fraud_sub = current_data[current_data["isFraud"] == 1]
+            if len(fraud_sub) > 0:
+                count_chart = alt.Chart(fraud_sub).mark_bar(color="#E05656").encode(
+                    x=alt.X("type:N", title="Transaction Channel", sort="-y"),
+                    y=alt.Y("count():Q", title="Fraud Incident Count"),
+                    tooltip=["type", "count()"]
+                ).properties(height=320)
+                st.altair_chart(count_chart, use_container_width=True)
+            else:
+                st.info("No fraud incidents detected in current dataset view.")
+
+    st.subheader("Automated Risk Summary and Policy Governance")
+    st.markdown(f"""
+    - **Current Data Health**: Pipeline currently loaded with **{total_tx:,}** transactions across **{len(current_data.columns)}** schema columns.
+    - **Primary Vulnerability**: Critical loss patterns remain concentrated in **TRANSFER** and **CASH_OUT** routes.
+    - **Operational Readiness**: {'Model trained on active dataset. Alert capacity calibration enabled in Stage 7.' if has_model else 'Model not yet trained on active session data. Proceed to Stage 6 to generate PR-AUC calibration metrics.'}
+    """)
+
+# -------------------------------------------------------------
+# STAGE 1: INGESTION
+# -------------------------------------------------------------
+elif nav_section == "Stage 1: Continuous Data Ingestion":
+    st.title("Stage 1: Continuous Data Ingestion")
+    st.markdown("Unified ingestion endpoint. Define record volume or upload an external batch. Injects synthetic anomalies (15% to 28%) for realistic pipeline validation.")
+
+    ctrl_col1, ctrl_col2 = st.columns([1, 1])
+    with ctrl_col1:
+        record_count = st.slider("Select Record Ingestion Volume:", min_value=500, max_value=10000, value=2000, step=250)
+        if st.button("Ingest New Transaction Batch"):
+            st.session_state["raw_df"] = generate_unclean_dataset(record_count)
+            st.session_state["cleaned_df"] = None
             st.session_state["featured_df"] = None
-            st.success(f"Generated {batch_size:,} fresh transactions. Downstream pipeline stages updated!")
+            st.session_state["trained_model"] = None
+            st.success(f"Ingested {len(st.session_state['raw_df']):,} records containing realistic data anomalies.")
 
-        st.dataframe(st.session_state["raw_df"].head(10), use_container_width=True)
-
-    with c2:
-        st.subheader("Data Export / Import")
-        csv_bytes = st.session_state["raw_df"].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download Current Ingested Feed (CSV)",
-            data=csv_bytes,
-            file_name="active_transaction_feed.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-        
-        uploaded = st.file_uploader("Upload External CSV Feed", type=["csv"])
-        if uploaded is not None:
-            st.session_state["raw_df"] = pd.read_csv(uploaded)
-            st.session_state["cleaned_df"] = st.session_state["raw_df"].copy()
+    with ctrl_col2:
+        uploaded_csv = st.file_uploader("Or Upload Custom CSV Batch", type=["csv"])
+        if uploaded_csv is not None:
+            st.session_state["raw_df"] = pd.read_csv(uploaded_csv)
+            st.session_state["cleaned_df"] = None
             st.session_state["featured_df"] = None
-            st.success(f"Ingested {len(st.session_state['raw_df']):,} rows from custom upload.")
+            st.session_state["trained_model"] = None
+            st.success(f"Uploaded and ingested {len(st.session_state['raw_df']):,} rows from external feed.")
+
+    st.subheader(f"Current Ingested Raw Dataset ({len(st.session_state['raw_df']):,} Total Records)")
+    st.dataframe(st.session_state["raw_df"], use_container_width=True, height=450)
 
 # -------------------------------------------------------------
-# 2. CLEANING & VALIDATION
+# STAGE 2: CLEANING & VALIDATION
 # -------------------------------------------------------------
-elif stage == "2. Cleaning & Validation":
-    st.title("2. Data Cleaning & Integrity Audit")
-    st.markdown("Dynamic verification: null scans, duplicate pruning, and negative balance filters.")
+elif nav_section == "Stage 2: Cleaning and Data Validation":
+    st.title("Stage 2: Data Cleaning and Integrity Audit")
+    st.markdown("Examine unclean records (null values, negative balances, duplicates) and execute adaptive sanitization rules.")
 
-    if st.button("🧹 Run / Refresh Cleaning & Validation Audit"):
-        df = st.session_state["raw_df"].copy()
-        initial_len = len(df)
-        df = df.dropna()
-        df = df.drop_duplicates()
-        df = df[(df["amount"] >= 0) & (df["oldbalanceOrg"] >= 0) & (df["newbalanceOrig"] >= 0)]
-        st.session_state["cleaned_df"] = df
-        st.success(f"Audit completed: {len(df):,} valid transactions retained ({initial_len - len(df)} discarded).")
+    raw = st.session_state["raw_df"]
+    null_counts = int(raw.isna().sum().sum())
+    neg_amounts = int((raw["amount"] < 0).sum())
+    neg_balances = int(((raw["oldbalanceOrg"] < 0) | (raw["newbalanceOrig"] < 0)).sum())
+    dupes = int(raw.duplicated().sum())
 
-    df = st.session_state["cleaned_df"]
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Ingested Records", f"{len(st.session_state['raw_df']):,}")
-    c2.metric("Clean Records", f"{len(df):,}")
-    c3.metric("Missing / Nulls", int(df.isna().sum().sum()))
-    c4.metric("Negative Values Filtered", int((st.session_state['raw_df']["amount"] < 0).sum()))
+    c1.metric("Null Fields", f"{null_counts:,}")
+    c2.metric("Negative Amounts", f"{neg_amounts:,}")
+    c3.metric("Negative Balances", f"{neg_balances:,}")
+    c4.metric("Duplicate Rows", f"{dupes:,}")
 
-    st.subheader("Cleaned Dataset Snapshot")
-    st.dataframe(df.head(10), use_container_width=True)
+    if st.button("Run Data Cleaning and Sanitization"):
+        cleaned = raw.copy()
+        cleaned = cleaned.drop_duplicates()
+
+        # Handle null values: impute if voluminous, drop if minimal
+        if cleaned.isna().sum().sum() > 0:
+            for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
+                if col in cleaned and cleaned[col].isna().sum() > 0:
+                    cleaned[col] = cleaned[col].fillna(cleaned[col].median())
+            cleaned = cleaned.dropna()
+
+        # Rule-based filtering: absolute negative amounts
+        cleaned["amount"] = cleaned["amount"].abs()
+        cleaned["oldbalanceOrg"] = cleaned["oldbalanceOrg"].abs()
+        cleaned["newbalanceOrig"] = cleaned["newbalanceOrig"].abs()
+        cleaned["oldbalanceDest"] = cleaned["oldbalanceDest"].abs()
+        cleaned["newbalanceDest"] = cleaned["newbalanceDest"].abs()
+
+        st.session_state["cleaned_df"] = cleaned
+        st.success(f"Cleaning completed. Retained {len(cleaned):,} valid records.")
+
+    display_df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else raw
+    status_label = "Cleaned Dataset" if st.session_state["cleaned_df"] is not None else "Raw Uncleaned Dataset"
+    st.subheader(f"{status_label} ({len(display_df):,} Records)")
+    st.dataframe(display_df, use_container_width=True, height=450)
 
 # -------------------------------------------------------------
-# 3. EXPLORATORY DATA ANALYSIS (EDA)
+# STAGE 3: EXPLORATORY DATA ANALYSIS (EDA)
 # -------------------------------------------------------------
-elif stage == "3. Exploratory Data Analysis (EDA)":
-    st.title("3. Exploratory Data Analysis (EDA)")
-    st.markdown("Visual analytics dynamically computed over the currently cleaned transactions.")
+elif nav_section == "Stage 3: Exploratory Data Analysis":
+    st.title("Stage 3: Exploratory Data Analysis (EDA)")
+    st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
-    df = st.session_state["cleaned_df"]
+    df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
 
-    col_btn, _ = st.columns([1, 3])
-    with col_btn:
-        if st.button("📊 Recalculate EDA Distributions"):
-            st.toast("EDA metrics and distribution charts refreshed!")
+    eda_c1, eda_c2 = st.columns(2)
+    with eda_c1:
+        st.subheader("Transaction Volume by Type and Target")
+        chart_tx = alt.Chart(df).mark_bar().encode(
+            x=alt.X("type:N", title="Transaction Channel"),
+            y=alt.Y("count():Q", title="Volume"),
+            color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
+            tooltip=["type", "count()"]
+        ).properties(height=320)
+        st.altair_chart(chart_tx, use_container_width=True)
 
-    e1, e2 = st.columns(2)
-    with e1:
-        st.subheader("Fraud by Transaction Channel")
-        channel_df = df.groupby(["type", "isFraud"]).size().reset_index(name="count")
-        channel_chart = alt.Chart(channel_df).mark_bar().encode(
-            x=alt.X("type:N", title="Channel"),
-            y=alt.Y("count:Q", title="Volume"),
-            color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag"))
-        ).properties(height=300)
-        st.altair_chart(channel_chart, use_container_width=True)
-
-    with e2:
-        st.subheader("Amount Log-Distribution by Target")
-        box_chart = alt.Chart(df).mark_boxplot().encode(
-            x=alt.X("isFraud:N", title="0 = Legitimate, 1 = Fraud"),
-            y=alt.Y("amount:Q", scale=alt.Scale(type="log"), title="Amount ($)"),
+    with eda_c2:
+        st.subheader("Amount Distribution by Target Class")
+        chart_box = alt.Chart(df).mark_boxplot().encode(
+            x=alt.X("isFraud:N", title="Class (0 = Legitimate, 1 = Fraud)"),
+            y=alt.Y("amount:Q", scale=alt.Scale(type="log"), title="Transaction Amount ($)"),
             color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]))
-        ).properties(height=300)
-        st.altair_chart(box_chart, use_container_width=True)
+        ).properties(height=320)
+        st.altair_chart(chart_box, use_container_width=True)
+
+    st.subheader("Diurnal Transaction Velocity by Simulation Step")
+    line_step = alt.Chart(df).mark_line(color="#F2994A").encode(
+        x=alt.X("step:Q", title="Simulation Step (Hour)"),
+        y=alt.Y("count():Q", title="Transaction Throughput"),
+        tooltip=["step", "count()"]
+    ).properties(height=260)
+    st.altair_chart(line_step, use_container_width=True)
 
 # -------------------------------------------------------------
-# 4. FEATURE ENGINEERING
+# STAGE 4: FEATURE ENGINEERING
 # -------------------------------------------------------------
-elif stage == "4. Feature Engineering & Leak-Free Windowing":
-    st.title("4. Feature Engineering (V3.1 Leak-Free)")
-    st.markdown("Computes step differences, balance drain indicators, and historical account behavior.")
+elif nav_section == "Stage 4: Feature Engineering":
+    st.title("Stage 4: Leak-Free Feature Engineering (V3.1)")
+    st.markdown("Extract delta balances, temporal components, and leak-free historical behavioral metrics.")
 
-    if st.button("⚙️ Extract Features from Clean Data"):
-        with st.spinner("Extracting historical aggregates and delta features..."):
-            df = st.session_state["cleaned_df"].copy()
-            df["balance_orig_diff"] = df["oldbalanceOrg"] - df["newbalanceOrig"] - df["amount"]
-            df["balance_dest_diff"] = df["newbalanceDest"] - df["oldbalanceDest"] - df["amount"]
-            df["hour_of_day"] = df["step"] % 24
+    df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
 
-            # Leak-free sender transaction count & mean amount
-            df["orig_hist_count"] = df.groupby("nameOrig").cumcount()
-            df["orig_hist_mean_amount"] = df.groupby("nameOrig")["amount"].transform("mean")
-            df["dest_max_amount"] = df.groupby("nameDest")["amount"].transform("max")
-            
-            st.session_state["featured_df"] = df
-            st.success(f"Engineered {df.shape[1]} features across {len(df):,} records!")
+    if st.button("Generate Feature Transformations"):
+        with st.spinner("Extracting features..."):
+            feat = df.copy()
+            feat["balance_orig_diff"] = feat["oldbalanceOrg"] - feat["newbalanceOrig"] - feat["amount"]
+            feat["balance_dest_diff"] = feat["newbalanceDest"] - feat["oldbalanceDest"] - feat["amount"]
+            feat["hour_of_day"] = feat["step"] % 24
+            feat["orig_hist_count"] = feat.groupby("nameOrig").cumcount()
+            feat["orig_hist_mean_amount"] = feat.groupby("nameOrig")["amount"].transform("mean")
+            feat["dest_max_amount"] = feat.groupby("nameDest")["amount"].transform("max")
+            st.session_state["featured_df"] = feat
+            st.success(f"Feature engineering completed across {feat.shape[1]} total dimensions.")
 
     if st.session_state["featured_df"] is not None:
         feat_df = st.session_state["featured_df"]
-        st.dataframe(feat_df[["step", "type", "amount", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount", "isFraud"]].head(10), use_container_width=True)
+        st.subheader("Engineered Feature Signals (Separate Table)")
+        eng_cols = ["step", "nameOrig", "amount", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
+        st.dataframe(feat_df[eng_cols], use_container_width=True, height=350)
+
+        st.subheader("Feature Variance and Statistics")
+        st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "dest_max_amount"]].describe(), use_container_width=True)
     else:
-        st.info("Click 'Extract Features from Clean Data' above to run the feature transformation pipeline.")
+        st.info("Click 'Generate Feature Transformations' above to compute feature tables.")
 
 # -------------------------------------------------------------
-# 5. IMBALANCE HANDLING & CHRONOLOGICAL SPLIT
+# STAGE 5: IMBALANCE HANDLING & SPLITTING
 # -------------------------------------------------------------
-elif stage == "5. Imbalance Handling & Chronological Split":
-    st.title("5. Chronological Partitioning & Class Weighting")
-    st.markdown("Partitions data chronologically by simulation `step` to prevent temporal lookahead bias.")
+elif nav_section == "Stage 5: Imbalance Handling and Splitting":
+    st.title("Stage 5: Imbalance Handling and Chronological Splitting")
+    st.markdown("Partition data strictly by step to preserve causal temporal ordering and handle class imbalance.")
 
     if st.session_state["featured_df"] is None:
-        st.warning("Please extract features in Stage 4 first before splitting.")
+        st.warning("Please complete feature generation in Stage 4 first.")
     else:
         df = st.session_state["featured_df"]
         max_step = int(df["step"].max())
-        split_step = int(max_step * 0.75)
+        default_split = max(1, int(max_step * 0.75))
 
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            split_step = st.slider("Select Chronological Split Step:", 1, max_step, split_step)
-            train_mask = df["step"] <= split_step
-            train_df = df[train_mask]
-            test_df = df[~train_mask]
+        split_c1, split_c2 = st.columns([1, 2])
+        with split_c1:
+            split_step = st.slider("Select Chronological Split Step:", min_value=1, max_value=max_step, value=default_split)
+            imbalance_method = st.selectbox("Imbalance Strategy:", ["Cost-Sensitive Class Weighting (scale_pos_weight)", "Synthetic Minority Oversampling (Simulated)"])
             
-            st.session_state["train_df"] = train_df
-            st.session_state["test_df"] = test_df
+            if st.button("Apply Partition and Strategy"):
+                train_mask = df["step"] <= split_step
+                st.session_state["train_df"] = df[train_mask]
+                st.session_state["test_df"] = df[~train_mask]
+                st.success("Chronological split established.")
 
-        with c2:
-            st.metric("Training Set (Steps 1 to " + str(split_step) + ")", f"{len(train_df):,} rows")
-            st.metric("Test / Out-of-Time Set (Steps " + str(split_step+1) + "+)", f"{len(test_df):,} rows")
-            
-            fraud_train = train_df['isFraud'].sum()
-            scale_pos = (len(train_df) - fraud_train) / max(1, fraud_train)
-            st.caption(f"Calculated `scale_pos_weight` for class imbalance: **{scale_pos:.2f}**")
+        with split_c2:
+            if st.session_state["train_df"] is not None:
+                train_len = len(st.session_state["train_df"])
+                test_len = len(st.session_state["test_df"])
+                train_fraud = int(st.session_state["train_df"]["isFraud"].sum())
+                test_fraud = int(st.session_state["test_df"]["isFraud"].sum())
+
+                st.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
+                st.metric("Out-of-Time Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
+                scale_pos = (train_len - train_fraud) / max(1, train_fraud)
+                st.caption(f"Calculated `scale_pos_weight` multiplier: **{scale_pos:.2f}**")
 
 # -------------------------------------------------------------
-# 6. MODEL SELECTION & LIVE RETRAINING
+# STAGE 6: MODEL TRAINING & TELEMETRY
 # -------------------------------------------------------------
-elif stage == "6. Model Selection & Live Retraining":
-    st.title("6. Model Training & Evaluation")
-    st.markdown("Train a LightGBM classifier directly on the currently engineered and chronologically split data.")
+elif nav_section == "Stage 6: Model Training and Evaluation":
+    st.title("Stage 6: Model Training and Telemetry")
+    st.markdown("Train LightGBM on the active training partition and evaluate precision-recall curves.")
 
-    if "train_df" not in st.session_state or len(st.session_state["train_df"]) == 0:
-        st.warning("Please configure the dataset in Stage 4 & Stage 5 first.")
+    if st.session_state["train_df"] is None:
+        st.warning("Please configure the train/test split in Stage 5 first.")
     else:
         train_df = st.session_state["train_df"]
         test_df = st.session_state["test_df"]
 
-        if st.button("🚀 Train LightGBM Model on Active Dataset"):
-            with st.spinner("Training model with class imbalance compensation..."):
-                feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest", 
+        if st.button("Train LightGBM Model"):
+            with st.spinner("Fitting LightGBM classifier..."):
+                feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                                 "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
                 
                 X_train, y_train = train_df[feature_cols], train_df["isFraud"]
@@ -272,8 +379,8 @@ elif stage == "6. Model Selection & Live Retraining":
                 scale_pos = (len(y_train) - y_train.sum()) / max(1, y_train.sum())
 
                 clf = lgb.LGBMClassifier(
-                    n_estimators=60,
-                    learning_rate=0.08,
+                    n_estimators=75,
+                    learning_rate=0.06,
                     scale_pos_weight=scale_pos,
                     random_state=42,
                     verbose=-1
@@ -282,109 +389,105 @@ elif stage == "6. Model Selection & Live Retraining":
 
                 preds = clf.predict_proba(X_test)[:, 1]
                 precision, recall, _ = precision_recall_curve(y_test, preds)
-                pr_auc = auc(recall, precision)
-                roc_auc = roc_auc_score(y_test, preds) if len(np.unique(y_test)) > 1 else 0.5
+                pr_auc_score = auc(recall, precision)
+                roc_auc_val = roc_auc_score(y_test, preds) if len(np.unique(y_test)) > 1 else 0.5
 
                 st.session_state["trained_model"] = clf
-                st.session_state["pr_auc"] = pr_auc
-                st.session_state["roc_auc"] = roc_auc
-                st.success("Model successfully trained on current active data!")
+                st.session_state["pr_auc"] = pr_auc_score
+                st.session_state["roc_auc"] = roc_auc_val
+                st.session_state["eval_preds"] = preds
+                st.session_state["eval_y"] = y_test
+                st.success("Model training and out-of-time evaluation completed.")
 
-        if "trained_model" in st.session_state:
+        if st.session_state["trained_model"] is not None:
             m1, m2 = st.columns(2)
-            m1.metric("PR-AUC Score (Primary Metric)", f"{st.session_state['pr_auc']:.4f}")
-            m2.metric("ROC-AUC Score", f"{st.session_state['roc_auc']:.4f}")
+            m1.metric("Precision-Recall AUC (PR-AUC)", f"{st.session_state['pr_auc']:.4f}")
+            m2.metric("ROC-AUC", f"{st.session_state['roc_auc']:.4f}")
+
+            # Plot PR curve
+            precision, recall, _ = precision_recall_curve(st.session_state["eval_y"], st.session_state["eval_preds"])
+            pr_data = pd.DataFrame({"Recall": recall, "Precision": precision})
+            pr_chart = alt.Chart(pr_data).mark_line(color="#2F80ED").encode(
+                x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1])),
+                y=alt.Y("Precision:Q", scale=alt.Scale(domain=[0, 1]))
+            ).properties(height=300, title="Precision-Recall Trajectory")
+            st.altair_chart(pr_chart, use_container_width=True)
 
 # -------------------------------------------------------------
-# 7. REAL-TIME FRAUD PREDICTION & MONITORING
+# STAGE 7: PREDICTION & DECISION QUEUE
 # -------------------------------------------------------------
-elif stage == "7. Real-Time Fraud Prediction & Monitoring":
-    st.title("7. Fraud Prediction & Operational Monitoring")
-    tab_single, tab_batch = st.tabs(["⚡ Single Transaction Screener", "📁 Batch Screening & Capacity Audit"])
+elif nav_section == "Stage 7: Operational Prediction and Flagging":
+    st.title("Stage 7: Real-Time Fraud Prediction and Operational Flagging")
+    st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve).")
 
-    with tab_single:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            tx_type = st.selectbox("Transaction Type", ["TRANSFER", "CASH_OUT", "PAYMENT", "CASH_IN", "DEBIT"])
-            tx_amount = st.number_input("Amount ($)", value=250000.0, step=1000.0)
-        with c2:
-            old_orig = st.number_input("Sender Old Balance ($)", value=250000.0, step=1000.0)
-            new_orig = st.number_input("Sender New Balance ($)", value=0.0, step=1000.0)
-        with c3:
-            old_dest = st.number_input("Receiver Old Balance ($)", value=0.0, step=1000.0)
-            new_dest = st.number_input("Receiver New Balance ($)", value=250000.0, step=1000.0)
+    source_data = st.session_state["featured_df"] if st.session_state["featured_df"] is not None else st.session_state["raw_df"]
+    scoring_batch = source_data.copy().head(500)
 
-        risk_score = 0.04
-        if tx_type in ["TRANSFER", "CASH_OUT"]:
-            if old_orig > 0 and new_orig == 0:
-                risk_score += 0.65
-            if tx_amount > 150000:
-                risk_score += 0.22
-        risk_score = min(0.99, max(0.01, risk_score))
-
-        if risk_score >= 0.80:
-            action, color_class = "Block", "badge-block"
-        elif risk_score >= 0.40:
-            action, color_class = "Review", "badge-review"
-        else:
-            action, color_class = "Approve", "badge-approve"
-
-        st.markdown(f"### Decision: <span class='{color_class}'>{action} (Risk Score: {risk_score:.3f})</span>", unsafe_allow_html=True)
-
-    with tab_batch:
-        st.subheader("Batch File Scoring")
-        batch_source = st.session_state["raw_df"].head(400).copy()
-
+    # Score transactions
+    if st.session_state["trained_model"] is not None and "balance_orig_diff" in scoring_batch:
+        feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
+                        "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
+        scores = st.session_state["trained_model"].predict_proba(scoring_batch[feature_cols])[:, 1]
+    else:
         scores = []
-        for _, row in batch_source.iterrows():
-            sc = 0.04
-            if row["type"] in ["TRANSFER", "CASH_OUT"]:
-                if row["oldbalanceOrg"] > 0 and row["newbalanceOrig"] == 0:
-                    sc += 0.62
-                if row["amount"] > 100000:
+        for _, row in scoring_batch.iterrows():
+            sc = 0.05
+            if row.get("type", "") in ["TRANSFER", "CASH_OUT"]:
+                if row.get("oldbalanceOrg", 0) > 0 and row.get("newbalanceOrig", 0) == 0:
+                    sc += 0.60
+                if row.get("amount", 0) > 120000:
                     sc += 0.25
-            scores.append(min(0.98, max(0.01, sc + np.random.uniform(-0.03, 0.03))))
+            scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.02, 0.02))))
 
-        batch_source["fraud_score"] = np.round(scores, 3)
-        batch_source["audit_action"] = pd.cut(
-            batch_source["fraud_score"],
-            bins=[-0.1, 0.40, 0.80, 1.0],
-            labels=["Approve", "Review", "Block"]
-        )
+    scoring_batch["fraud_score"] = np.round(scores, 4)
+    scoring_batch["audit_action"] = pd.cut(
+        scoring_batch["fraud_score"],
+        bins=[-0.1, 0.40, 0.80, 1.0],
+        labels=["Approve", "Review", "Block"]
+    )
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Approve (Low Risk - Blue)", int((batch_source['audit_action'] == 'Approve').sum()))
-        m2.metric("Review (Manual Queue - Yellow)", int((batch_source['audit_action'] == 'Review').sum()))
-        m3.metric("Block (High Risk - Red)", int((batch_source['audit_action'] == 'Block').sum()))
+    t1, t2, t3 = st.columns(3)
+    n_approve = int((scoring_batch["audit_action"] == "Approve").sum())
+    n_review = int((scoring_batch["audit_action"] == "Review").sum())
+    n_block = int((scoring_batch["audit_action"] == "Block").sum())
 
-        st.caption("💡 **Interactive Legend**: Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
+    t1.metric("Approve Tier (Low Risk - Blue)", f"{n_approve:,}")
+    t2.metric("Review Tier (Manual Queue - Yellow)", f"{n_review:,}")
+    t3.metric("Block Tier (High Risk - Red)", f"{n_block:,}")
 
-        selection = alt.selection_point(fields=['audit_action'], bind='legend')
+    st.markdown("---")
+    st.subheader("Operational Risk Distribution")
+    st.caption("Interactive Legend: Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
 
-        scatter_chart = alt.Chart(batch_source).mark_circle(size=70).encode(
-            x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log")),
-            y=alt.Y("fraud_score:Q", title="Fraud Risk Score"),
-            color=alt.Color(
-                "audit_action:N",
-                scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
-                legend=alt.Legend(title="Audit Action (Click to Filter)")
-            ),
-            opacity=alt.condition(selection, alt.value(0.85), alt.value(0.1)),
-            tooltip=["step", "type", "amount", "fraud_score", "audit_action"]
-        ).add_params(selection).properties(height=380).interactive()
+    selection = alt.selection_point(fields=["audit_action"], bind="legend")
 
-        st.altair_chart(scatter_chart, use_container_width=True)
+    scatter_chart = alt.Chart(scoring_batch).mark_circle(size=70).encode(
+        x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log")),
+        y=alt.Y("fraud_score:Q", title="Fraud Risk Score"),
+        color=alt.Color(
+            "audit_action:N",
+            scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
+            legend=alt.Legend(title="Audit Action (Click to Filter)")
+        ),
+        opacity=alt.condition(selection, alt.value(0.85), alt.value(0.1)),
+        tooltip=["step", "type", "amount", "fraud_score", "audit_action"]
+    ).add_params(selection).properties(height=380).interactive()
 
-        def style_action(val):
-            if val == "Block":
-                return "background-color: rgba(224, 86, 86, 0.35); font-weight: bold; color: #E05656;"
-            elif val == "Review":
-                return "background-color: rgba(242, 201, 76, 0.35); font-weight: bold; color: #F2C94C;"
-            elif val == "Approve":
-                return "background-color: rgba(47, 128, 237, 0.25); color: #2F80ED;"
-            return ""
+    st.altair_chart(scatter_chart, use_container_width=True)
 
-        st.dataframe(
-            batch_source.head(100).style.map(style_action, subset=["audit_action"]),
-            use_container_width=True
-        )
+    st.subheader("Flagged Accounts and Decision Ledger")
+
+    def style_action(val):
+        if val == "Block":
+            return "background-color: rgba(224, 86, 86, 0.35); font-weight: bold; color: #E05656;"
+        elif val == "Review":
+            return "background-color: rgba(242, 201, 76, 0.35); font-weight: bold; color: #F2C94C;"
+        elif val == "Approve":
+            return "background-color: rgba(47, 128, 237, 0.25); color: #2F80ED;"
+        return ""
+
+    st.dataframe(
+        scoring_batch.head(150).style.map(style_action, subset=["audit_action"]),
+        use_container_width=True,
+        height=400
+    )
