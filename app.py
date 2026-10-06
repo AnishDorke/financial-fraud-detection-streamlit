@@ -84,7 +84,7 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     old_dest = np.round(rng.exponential(scale=base_scale * 0.7, size=n_rows), 2)
     new_dest = old_dest + amounts
 
-    fraud_rate = rng.uniform(0.03, 0.05)
+    fraud_rate = rng.uniform(0.025, 0.04)
     fraud_count = max(20, int(n_rows * fraud_rate))
     is_fraud = np.zeros(n_rows, dtype=int)
     fraud_idx = rng.choice(n_rows, size=fraud_count, replace=False)
@@ -163,11 +163,10 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-# Single progress controller anchored to top
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7, progress_slot=None):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         target = progress_slot if progress_slot is not None else st
-        pbar = target.progress(0.0, text=f"Automatic Pipeline Active: Executing stage calculations ({seconds}s remaining)...")
+        pbar = target.progress(0.0, text=f"Automatic Pipeline Active: Processing stage calculations ({seconds}s remaining)...")
         for s in range(seconds, 0, -1):
             fraction = (seconds - s + 1) / float(seconds)
             pbar.progress(fraction, text=f"Automatic Pipeline Active: Processing stage calculations... Advancing in {s}s")
@@ -573,7 +572,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE (Calibrated Inverted Pyramid: ~90% Approve, ~6% Review, ~4% Block)
+# STAGE 7: PREDICTION & DECISION QUEUE (Guaranteed: ~91% Approve, ~5.5% Review, ~3.5% Block)
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
@@ -581,6 +580,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve) across the active dataset.")
 
     scoring_batch = st.session_state["featured_df"].copy().reset_index(drop=True) if st.session_state["featured_df"] is not None else st.session_state["raw_df"].copy().reset_index(drop=True)
+    N = len(scoring_batch)
 
     if st.session_state["trained_model"] is not None and "balance_orig_diff" in scoring_batch:
         feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
@@ -589,33 +589,47 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     else:
         raw_scores = []
         for _, row in scoring_batch.iterrows():
-            sc = 0.05
+            sc = 0.04
             if row.get("type", "") in ["TRANSFER", "CASH_OUT"]:
                 if row.get("oldbalanceOrg", 0) > 0 and row.get("newbalanceOrig", 0) == 0:
-                    sc += 0.58
+                    sc += 0.65
                 if row.get("amount", 0) > 100000:
-                    sc += 0.25
-            raw_scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.04, 0.04))))
+                    sc += 0.22
+            raw_scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.03, 0.03))))
 
     scoring_batch["fraud_score"] = np.round(raw_scores, 4)
 
-    # Inverted Pyramid Calibration:
-    # Top 3.5% highest risk scores -> Block (Red)
-    # Next 6.5% suspicious scores -> Review (Yellow)
-    # Remaining 90.0% -> Approve (Blue)
-    p_block = float(np.percentile(scoring_batch["fraud_score"], 96.5))
-    p_review = float(np.percentile(scoring_batch["fraud_score"], 90.0))
-    if p_block <= p_review:
-        p_block = 0.70
-        p_review = 0.40
+    # ---------------------------------------------------------
+    # STRICT TRIAGE HIERARCHY:
+    # 1. Start all records as Approve (the vast ~91% majority)
+    # 2. Assign top 3.5% highest scores + confirmed fraud to Block (~3.5% to 4%)
+    # 3. Assign next 5.5% highest scores to Review (~5.5%)
+    # ---------------------------------------------------------
+    actions = np.full(N, "Approve", dtype=object)
 
-    actions = np.full(len(scoring_batch), "Approve", dtype=object)
-    actions[scoring_batch["fraud_score"] >= p_review] = "Review"
-    actions[scoring_batch["fraud_score"] >= p_block] = "Block"
+    # Sort indices by fraud score descending
+    sorted_indices = np.argsort(-scoring_batch["fraud_score"].values)
+    
+    n_target_block = max(25, int(N * 0.035))
+    n_target_review = max(40, int(N * 0.055))
 
-    # Confirmed ground truth fraud is definitively Blocked
+    block_indices = set(sorted_indices[:n_target_block])
     if "isFraud" in scoring_batch:
-        actions[scoring_batch["isFraud"] == 1] = "Block"
+        # Ground truth confirmed fraud is always added to Block
+        ground_fraud = set(scoring_batch.index[scoring_batch["isFraud"] == 1])
+        block_indices = block_indices.union(ground_fraud)
+
+    for idx in block_indices:
+        actions[idx] = "Block"
+
+    # Fill review with next highest scores (excluding Block)
+    review_assigned = 0
+    for idx in sorted_indices:
+        if idx not in block_indices:
+            actions[idx] = "Review"
+            review_assigned += 1
+            if review_assigned >= n_target_review:
+                break
 
     scoring_batch["audit_action"] = actions
     st.session_state["scored_batch"] = scoring_batch
@@ -626,9 +640,9 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     n_review = int((scoring_batch["audit_action"] == "Review").sum())
     n_block = int((scoring_batch["audit_action"] == "Block").sum())
 
-    t1.metric("Approve Tier (Low Risk - Blue)", f"{n_approve:,}")
-    t2.metric("Review Tier (Manual Queue - Yellow)", f"{n_review:,}")
-    t3.metric("Block Tier (High Risk - Red)", f"{n_block:,}")
+    t1.metric("Approve Tier (Low Risk - Blue)", f"{n_approve:,} ({(n_approve/N*100):.1f}%)")
+    t2.metric("Review Tier (Manual Queue - Yellow)", f"{n_review:,} ({(n_review/N*100):.1f}%)")
+    t3.metric("Block Tier (High Risk - Red)", f"{n_block:,} ({(n_block/N*100):.1f}%)")
 
     st.markdown("---")
     st.subheader("Operational Risk Distribution")
@@ -673,8 +687,8 @@ elif current_nav == "Dashboard":
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Audited Volume", f"{total_tx:,} tx")
         k2.metric("Gross Exposure", f"${total_vol:,.2f}")
-        k3.metric("Review Queue", f"{n_review:,} ({((n_review/max(1, total_tx))*100):.1f}%)")
-        k4.metric("High Risk Blocked", f"{n_block:,} ({((n_block/max(1, total_tx))*100):.1f}%)")
+        k3.metric("Review Queue (Manual)", f"{n_review:,} ({((n_review/max(1, total_tx))*100):.1f}%)")
+        k4.metric("High Risk (Blocked)", f"{n_block:,} ({((n_block/max(1, total_tx))*100):.1f}%)")
 
         st.markdown("---")
 
