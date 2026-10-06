@@ -84,7 +84,7 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     old_dest = np.round(rng.exponential(scale=base_scale * 0.7, size=n_rows), 2)
     new_dest = old_dest + amounts
 
-    fraud_rate = rng.uniform(0.04, 0.08)
+    fraud_rate = rng.uniform(0.03, 0.05)
     fraud_count = max(20, int(n_rows * fraud_rate))
     is_fraud = np.zeros(n_rows, dtype=int)
     fraud_idx = rng.choice(n_rows, size=fraud_count, replace=False)
@@ -163,7 +163,7 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-# Single progress controller anchored to the top container
+# Single progress controller anchored to top
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7, progress_slot=None):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         target = progress_slot if progress_slot is not None else st
@@ -262,7 +262,6 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 st.session_state["auto_running"] = True
                 trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
-    # Tables suppressed in automatic mode
     if not (auto_mode or st.session_state["auto_running"]):
         st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records - Latest First)")
         st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
@@ -300,7 +299,6 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     if st.session_state["auto_running"] and st.session_state["cleaned_df"] is None:
         st.session_state["cleaned_df"] = execute_cleaning()
 
-    # Tables suppressed in automatic mode
     if not (auto_mode or st.session_state["auto_running"]):
         if st.button("Run Data Cleaning and Sanitization"):
             with st.spinner("Sanitizing active dataset..."):
@@ -315,7 +313,7 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (Zero tables, charts only)
+# STAGE 3: EXPLORATORY DATA ANALYSIS
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
@@ -379,7 +377,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (All tables hidden in auto mode)
+# STAGE 4: FEATURE ENGINEERING
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -420,7 +418,6 @@ elif current_nav == "Stage 4: Feature Engineering":
     if st.session_state["auto_running"] and st.session_state["featured_df"] is None:
         st.session_state["featured_df"] = perform_feature_engineering()
 
-    # Tables suppressed in automatic mode
     if not (auto_mode or st.session_state["auto_running"]):
         if st.button("Generate Feature Transformations"):
             with st.spinner("Extracting features..."):
@@ -446,7 +443,7 @@ elif current_nav == "Stage 4: Feature Engineering":
     handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 5: IMBALANCE HANDLING & SPLITTING (Metrics only)
+# STAGE 5: IMBALANCE HANDLING & SPLITTING
 # -------------------------------------------------------------
 elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
@@ -576,7 +573,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE (Guaranteed 3-tier distribution)
+# STAGE 7: PREDICTION & DECISION QUEUE (Calibrated Inverted Pyramid: ~90% Approve, ~6% Review, ~4% Block)
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
@@ -592,41 +589,33 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     else:
         raw_scores = []
         for _, row in scoring_batch.iterrows():
-            sc = 0.08
+            sc = 0.05
             if row.get("type", "") in ["TRANSFER", "CASH_OUT"]:
                 if row.get("oldbalanceOrg", 0) > 0 and row.get("newbalanceOrig", 0) == 0:
-                    sc += 0.55
+                    sc += 0.58
                 if row.get("amount", 0) > 100000:
-                    sc += 0.22
-            raw_scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.05, 0.05))))
+                    sc += 0.25
+            raw_scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.04, 0.04))))
 
     scoring_batch["fraud_score"] = np.round(raw_scores, 4)
 
-    # Robust calibrated triage thresholds:
-    p_block = float(np.percentile(scoring_batch["fraud_score"], 95))
-    p_review = float(np.percentile(scoring_batch["fraud_score"], 86))
+    # Inverted Pyramid Calibration:
+    # Top 3.5% highest risk scores -> Block (Red)
+    # Next 6.5% suspicious scores -> Review (Yellow)
+    # Remaining 90.0% -> Approve (Blue)
+    p_block = float(np.percentile(scoring_batch["fraud_score"], 96.5))
+    p_review = float(np.percentile(scoring_batch["fraud_score"], 90.0))
     if p_block <= p_review:
-        p_block = 0.55
-        p_review = 0.20
+        p_block = 0.70
+        p_review = 0.40
 
     actions = np.full(len(scoring_batch), "Approve", dtype=object)
     actions[scoring_batch["fraud_score"] >= p_review] = "Review"
     actions[scoring_batch["fraud_score"] >= p_block] = "Block"
 
+    # Confirmed ground truth fraud is definitively Blocked
     if "isFraud" in scoring_batch:
         actions[scoring_batch["isFraud"] == 1] = "Block"
-
-    # Guarantee substantial records in Block and Review
-    block_cnt = (actions == "Block").sum()
-    if block_cnt < 25:
-        top_b_idx = np.argsort(scoring_batch["fraud_score"].values)[-35:]
-        actions[top_b_idx] = "Block"
-
-    rev_cnt = (actions == "Review").sum()
-    if rev_cnt < 35:
-        avail_idx = [i for i in range(len(scoring_batch)) if actions[i] != "Block"]
-        top_r_idx = np.argsort(scoring_batch["fraud_score"].iloc[avail_idx].values)[-50:]
-        actions[[avail_idx[j] for j in top_r_idx]] = "Review"
 
     scoring_batch["audit_action"] = actions
     st.session_state["scored_batch"] = scoring_batch
@@ -665,7 +654,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     handle_auto_progression(6, "Dashboard", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# DASHBOARD (Guaranteed 3-tier Donut, Bar & Funnel)
+# DASHBOARD
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
@@ -725,7 +714,6 @@ elif current_nav == "Dashboard":
         v_col3, v_col4 = st.columns(2)
         with v_col3:
             st.subheader("Triage Composition")
-            # Donut chart reliably shows Block (Red), Review (Yellow), and Approve (Blue) with clear arc separators
             donut_chart = alt.Chart(triage_df).mark_arc(innerRadius=70, stroke="#1E222B", strokeWidth=2).encode(
                 theta=alt.Theta("count:Q", title="Volume"),
                 color=alt.Color(
@@ -760,13 +748,13 @@ elif current_nav == "Dashboard":
         st.markdown("---")
         st.subheader("Model Decision Telemetry and Ground Truth Comparison")
         comp_df = pd.DataFrame({
-            "Classification Category": ["Total Audited", "Flagged High Risk (Block)", "Flagged for Human Review (Review)", "Cleared Transactions (Approve)", "Ground Truth Confirmed Fraud"],
-            "Count": [total_tx, n_block, n_review, n_approve, actual_fraud],
+            "Classification Category": ["Total Audited", "Cleared Transactions (Approve)", "Flagged for Human Review (Review)", "Flagged High Risk (Block)", "Ground Truth Confirmed Fraud"],
+            "Count": [total_tx, n_approve, n_review, n_block, actual_fraud],
             "Proportion": [
                 "100.0%",
-                f"{(n_block / max(1, total_tx)) * 100:.2f}%",
-                f"{(n_review / max(1, total_tx)) * 100:.2f}%",
                 f"{(n_approve / max(1, total_tx)) * 100:.2f}%",
+                f"{(n_review / max(1, total_tx)) * 100:.2f}%",
+                f"{(n_block / max(1, total_tx)) * 100:.2f}%",
                 f"{(actual_fraud / max(1, total_tx)) * 100:.2f}%"
             ]
         })
