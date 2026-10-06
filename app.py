@@ -65,12 +65,10 @@ def trigger_next_stage(next_stage_name: str, stage_idx: int):
     st.session_state["pending_nav"] = next_stage_name
     st.rerun()
 
-# Dynamic Generator with Variable Regime Shifts so EDA varies noticeably per batch
 def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     seed_val = int(time.time() * 1000) % 1000000
     rng = np.random.default_rng(seed_val)
     
-    # Introduce random regime distribution shifts per generation
     channel_mix = rng.dirichlet(np.array([3.5, 1.5, 3.0, 0.8, 1.2]))
     steps = rng.integers(1, 35, size=n_rows)
     types = rng.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=channel_mix)
@@ -84,7 +82,6 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     old_dest = np.round(rng.exponential(scale=base_scale * 0.7, size=n_rows), 2)
     new_dest = old_dest + amounts
 
-    # Variable fraud rate between 3.0% and 7.5% per generation
     fraud_rate = rng.uniform(0.03, 0.075)
     fraud_count = max(8, int(n_rows * fraud_rate))
     is_fraud = np.zeros(n_rows, dtype=int)
@@ -310,7 +307,7 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (Fully Reactive & Scaled)
+# STAGE 3: EXPLORATORY DATA ANALYSIS
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
@@ -318,7 +315,6 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
     
-    # 1. Summary Cards dynamically reflecting the exact active ingestion
     total_active_tx = len(df)
     total_fraud_count = int(df["isFraud"].sum())
     fraud_pct = (total_fraud_count / max(1, total_active_tx)) * 100
@@ -331,7 +327,6 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
 
     st.markdown("---")
 
-    # 2. Channel Breakdown Aggregated over the entire active dataset
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
         st.subheader("Transaction Volume by Type and Target")
@@ -350,7 +345,6 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
 
     with eda_c2:
         st.subheader("Amount Distribution by Target Class")
-        # Subsample for boxplot rendering to avoid Altair payload overload
         box_sample = df.sample(n=min(len(df), 10000), random_state=42).copy()
         box_sample["Target"] = box_sample["isFraud"].map({0: "Legitimate", 1: "Fraud"})
         chart_box = alt.Chart(box_sample).mark_boxplot().encode(
@@ -360,7 +354,6 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
         ).properties(height=300).interactive()
         st.altair_chart(chart_box, use_container_width=True)
 
-    # 3. Dynamic Velocity Across Simulation Steps
     st.subheader("Diurnal Velocity by Simulation Step")
     step_counts = Counter(df["step"].astype(int))
     step_summary = pd.DataFrame([
@@ -571,6 +564,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
             scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.05, 0.05))))
 
     scoring_batch["fraud_score"] = np.round(scores, 4)
+    # Calibrated triage boundaries ensuring Review is populated
     scoring_batch["audit_action"] = pd.cut(
         scoring_batch["fraud_score"],
         bins=[-0.1, 0.25, 0.65, 1.0],
@@ -622,7 +616,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
         trigger_next_stage("Dashboard", 7)
 
 # -------------------------------------------------------------
-# DASHBOARD
+# DASHBOARD (Fixed Donut Segment Display & Multi-form Visuals)
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
@@ -646,6 +640,13 @@ elif current_nav == "Dashboard":
 
         st.markdown("---")
 
+        # Stable, explicit breakdown dataframe ensuring all categories are present
+        triage_df = pd.DataFrame([
+            {"audit_action": "Block", "count": n_block, "color": "#E05656"},
+            {"audit_action": "Review", "count": n_review, "color": "#F2C94C"},
+            {"audit_action": "Approve", "count": n_approve, "color": "#2F80ED"}
+        ])
+
         v_col1, v_col2 = st.columns(2)
         with v_col1:
             st.subheader("Decision Classification Distribution")
@@ -663,23 +664,13 @@ elif current_nav == "Dashboard":
 
         with v_col2:
             st.subheader("Operational Volume by Action Tier")
-            action_counts_map = Counter(scored["audit_action"].astype(str))
-            action_counts = pd.DataFrame({
-                "audit_action": ACTION_DOMAIN,
-                "count": [action_counts_map.get(action, 0) for action in ACTION_DOMAIN]
-            })
-
             bar_select = alt.selection_point(fields=["audit_action"])
-            chart_bar = alt.Chart(action_counts).mark_bar().encode(
-                x=alt.X("audit_action:N", title="Action Category", axis=alt.Axis(labelAngle=0)),
+            chart_bar = alt.Chart(triage_df).mark_bar().encode(
+                x=alt.X("audit_action:N", title="Action Category", axis=alt.Axis(labelAngle=0), sort=ACTION_DOMAIN),
                 y=alt.Y("count:Q", title="Transaction Volume"),
-                color=alt.condition(
-                    bar_select,
-                    alt.Color("audit_action:N", scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS), legend=None),
-                    alt.value("rgba(200,200,200,0.2)")
-                ),
+                color=alt.Color("audit_action:N", scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS), legend=None),
                 tooltip=["audit_action", "count"]
-            ).add_params(bar_select).properties(height=320).interactive()
+            ).properties(height=320).interactive()
             st.altair_chart(chart_bar, use_container_width=True)
 
         st.markdown("---")
@@ -687,16 +678,17 @@ elif current_nav == "Dashboard":
         v_col3, v_col4 = st.columns(2)
         with v_col3:
             st.subheader("Triage Composition")
-            donut_select = alt.selection_point(fields=["audit_action"])
-            donut_chart = alt.Chart(action_counts).mark_arc(innerRadius=65).encode(
+            # Clean, non-collapsing interactive donut chart displaying Block, Review, and Approve reliably
+            donut_chart = alt.Chart(triage_df).mark_arc(innerRadius=70, stroke="#1E222B", strokeWidth=2).encode(
                 theta=alt.Theta("count:Q", title="Volume"),
-                color=alt.condition(
-                    donut_select,
-                    alt.Color("audit_action:N", scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS), legend=alt.Legend(title="Triage Tier")),
-                    alt.value("rgba(200,200,200,0.2)")
+                color=alt.Color(
+                    "audit_action:N",
+                    scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
+                    legend=alt.Legend(title="Triage Tier")
                 ),
+                order=alt.Order("count:Q", sort="descending"),
                 tooltip=["audit_action", "count"]
-            ).add_params(donut_select).properties(height=320).interactive()
+            ).properties(height=320).interactive()
             st.altair_chart(donut_chart, use_container_width=True)
 
         with v_col4:
