@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean Solar theme styling (Zero emojis)
+# Styling and Badge Contracts (Zero Emojis)
 st.markdown("""
 <style>
     .metric-card {
@@ -43,7 +43,7 @@ st.markdown("""
 ACTION_COLORS = ["#E05656", "#F2C94C", "#2F80ED"]
 ACTION_DOMAIN = ["Block", "Review", "Approve"]
 
-def generate_unclean_dataset(n_rows: int = 2000) -> pd.DataFrame:
+def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     np.random.seed(int(pd.Timestamp.now().timestamp()) % 100000)
     steps = np.sort(np.random.randint(1, 35, size=n_rows))
     types = np.random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
@@ -56,7 +56,7 @@ def generate_unclean_dataset(n_rows: int = 2000) -> pd.DataFrame:
     new_dest = old_dest + amounts
 
     is_fraud = np.zeros(n_rows, dtype=int)
-    fraud_count = max(4, int(n_rows * 0.05))
+    fraud_count = max(10, int(n_rows * 0.045))
     fraud_idx = np.random.choice(n_rows, size=fraud_count, replace=False)
     for i in fraud_idx:
         types[i] = "TRANSFER" if np.random.rand() > 0.5 else "CASH_OUT"
@@ -91,12 +91,12 @@ def generate_unclean_dataset(n_rows: int = 2000) -> pd.DataFrame:
         elif issue == "negative_balance":
             df.loc[idx, "newbalanceOrig"] = -abs(df.loc[idx, "newbalanceOrig"])
 
-    dupe_rows = df.sample(n=max(2, int(n_rows * 0.03)), replace=True)
+    dupe_rows = df.sample(n=max(5, int(n_rows * 0.02)), replace=True)
     return pd.concat([df, dupe_rows], ignore_index=True)
 
 # State initialization
 if "raw_df" not in st.session_state:
-    st.session_state["raw_df"] = generate_unclean_dataset(2000)
+    st.session_state["raw_df"] = generate_unclean_dataset(50000)
 if "cleaned_df" not in st.session_state:
     st.session_state["cleaned_df"] = None
 if "featured_df" not in st.session_state:
@@ -111,8 +111,6 @@ if "scored_batch" not in st.session_state:
     st.session_state["scored_batch"] = None
 if "pipeline_complete" not in st.session_state:
     st.session_state["pipeline_complete"] = False
-if "current_nav" not in st.session_state:
-    st.session_state["current_nav"] = "Stage 1: Continuous Data Ingestion"
 if "auto_running" not in st.session_state:
     st.session_state["auto_running"] = False
 if "auto_stage_index" not in st.session_state:
@@ -129,15 +127,19 @@ STAGES = [
     "Dashboard"
 ]
 
+if "nav_selection" not in st.session_state:
+    st.session_state["nav_selection"] = STAGES[0]
+
+# --- SIDEBAR NAVIGATION (FIXED 1-CLICK RESPONSIVENESS) ---
 st.sidebar.title("Fraud Detection System")
 
-current_index = STAGES.index(st.session_state["current_nav"]) if st.session_state["current_nav"] in STAGES else 0
-selected_nav = st.sidebar.radio("Navigation Menu:", STAGES, index=current_index)
+current_nav = st.sidebar.radio(
+    "Navigation Menu:",
+    STAGES,
+    key="nav_selection"
+)
 
-if not st.session_state["auto_running"]:
-    st.session_state["current_nav"] = selected_nav
-
-# Bottom Sidebar Automation Toggle
+# Sidebar Automation Toggle
 st.sidebar.markdown("---")
 auto_mode = st.sidebar.toggle("Automatic Pipeline Mode", value=st.session_state["auto_running"])
 
@@ -151,26 +153,25 @@ def handle_auto_progression(current_stage_idx: int, next_stage_name: str, second
         status_box = st.empty()
         pbar = st.progress(0.0)
         for s in range(seconds, 0, -1):
-            status_box.info(f"Automatic Mode Active: Executing stage operations. Advancing to next stage in {s} seconds...")
+            status_box.info(f"Automatic Mode: Executing stage calculations. Advancing to next stage in {s} seconds...")
             pbar.progress((seconds - s + 1) / float(seconds))
             time.sleep(1.0)
         status_box.empty()
         pbar.empty()
         st.session_state["auto_stage_index"] = current_stage_idx + 1
-        st.session_state["current_nav"] = next_stage_name
+        st.session_state["nav_selection"] = next_stage_name
         st.rerun()
 
 # -------------------------------------------------------------
-# STAGE 1: INGESTION (User input gate before automation begins)
+# STAGE 1: INGESTION (Starts with 50,000 historical records)
 # -------------------------------------------------------------
-if st.session_state["current_nav"] == "Stage 1: Continuous Data Ingestion":
+if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
-    st.markdown("Configure record volume or upload your custom CSV feed. When Automatic Pipeline Mode is enabled, the pipeline waits for your input below before beginning automated execution across your entire dataset.")
+    st.markdown("Configure record volume or upload your custom CSV feed. When Automatic Pipeline Mode is enabled, the pipeline executes automatically across your selected volume.")
 
     ctrl_col1, ctrl_col2 = st.columns([1, 1])
     with ctrl_col1:
-        record_count = st.slider("Select Record Ingestion Volume:", min_value=500, max_value=25000, value=len(st.session_state["raw_df"]), step=500)
-        
+        record_count = st.slider("Select Record Ingestion Volume:", min_value=5000, max_value=100000, value=len(st.session_state["raw_df"]), step=5000)
         button_label = "Ingest & Begin Automated Pipeline" if auto_mode else "Ingest New Transaction Batch"
         if st.button(button_label, use_container_width=True):
             st.session_state["raw_df"] = generate_unclean_dataset(record_count)
@@ -181,11 +182,11 @@ if st.session_state["current_nav"] == "Stage 1: Continuous Data Ingestion":
             st.session_state["trained_model"] = None
             st.session_state["scored_batch"] = None
             st.session_state["pipeline_complete"] = False
-            
+
             if auto_mode:
                 st.session_state["auto_running"] = True
                 st.session_state["auto_stage_index"] = 1
-                st.session_state["current_nav"] = "Stage 2: Cleaning and Data Validation"
+                st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
                 st.rerun()
             else:
                 st.success(f"Ingested {len(st.session_state['raw_df']):,} records containing realistic data anomalies.")
@@ -201,22 +202,22 @@ if st.session_state["current_nav"] == "Stage 1: Continuous Data Ingestion":
             st.session_state["trained_model"] = None
             st.session_state["scored_batch"] = None
             st.session_state["pipeline_complete"] = False
-            
+
             if auto_mode:
                 st.session_state["auto_running"] = True
                 st.session_state["auto_stage_index"] = 1
-                st.session_state["current_nav"] = "Stage 2: Cleaning and Data Validation"
+                st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
                 st.rerun()
             else:
                 st.success(f"Uploaded and ingested {len(st.session_state['raw_df']):,} rows from external feed.")
 
-    st.subheader(f"Current Ingested Raw Dataset ({len(st.session_state['raw_df']):,} Total Records)")
+    st.subheader(f"Raw Transaction Feed ({len(st.session_state['raw_df']):,} Records)")
     st.dataframe(st.session_state["raw_df"], use_container_width=True, height=420)
 
 # -------------------------------------------------------------
 # STAGE 2: CLEANING & VALIDATION (8s progression)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Stage 2: Cleaning and Data Validation":
+elif current_nav == "Stage 2: Cleaning and Data Validation":
     st.title("Stage 2: Data Cleaning and Integrity Audit")
     st.markdown("Examine unclean records (null values, negative balances, duplicates) and execute adaptive sanitization rules.")
 
@@ -257,55 +258,50 @@ elif st.session_state["current_nav"] == "Stage 2: Cleaning and Data Validation":
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (Interactive, 8s progression)
+# STAGE 3: EXPLORATORY DATA ANALYSIS (Dynamically Recalculated)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Stage 3: Exploratory Data Analysis":
+elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
-    st.markdown("Interactive visual analytics dynamically computed over the active dataset.")
+    st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
+    # Sample up to 10k rows for rapid, reactive Altair charting
+    chart_sample = df.sample(n=min(len(df), 10000), random_state=42) if len(df) > 10000 else df
 
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
-        st.subheader("Transaction Volume by Type and Target (Interactive)")
-        st.caption("Click bars to filter and highlight channels.")
-        channel_select = alt.selection_point(fields=["type"])
-        chart_tx = alt.Chart(df).mark_bar().encode(
+        st.subheader("Transaction Volume by Type and Target")
+        chart_tx = alt.Chart(chart_sample).mark_bar().encode(
             x=alt.X("type:N", title="Transaction Channel", axis=alt.Axis(labelAngle=0)),
             y=alt.Y("count():Q", title="Volume"),
-            color=alt.condition(
-                channel_select,
-                alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
-                alt.value("rgba(200,200,200,0.2)")
-            ),
+            color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
             tooltip=["type", "count()"]
-        ).add_params(channel_select).properties(height=300).interactive()
+        ).properties(height=300).interactive()
         st.altair_chart(chart_tx, use_container_width=True)
 
     with eda_c2:
         st.subheader("Amount Distribution by Target Class")
-        chart_box = alt.Chart(df).mark_boxplot().encode(
+        chart_box = alt.Chart(chart_sample).mark_boxplot().encode(
             x=alt.X("isFraud:N", title="Class (0 = Legitimate, 1 = Fraud)", axis=alt.Axis(labelAngle=0)),
             y=alt.Y("amount:Q", scale=alt.Scale(type="log"), title="Transaction Amount ($)"),
             color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]))
         ).properties(height=300).interactive()
         st.altair_chart(chart_box, use_container_width=True)
 
-    st.subheader("Diurnal Velocity by Simulation Step (Interactive Hover)")
-    step_select = alt.selection_point(nearest=True, on="mouseover", fields=["step"], empty=False)
-    line_step = alt.Chart(df).mark_line(color="#F2994A", point=True).encode(
+    st.subheader("Diurnal Velocity by Simulation Step")
+    line_step = alt.Chart(chart_sample).mark_line(color="#F2994A", point=True).encode(
         x=alt.X("step:Q", title="Simulation Step (Hour)", axis=alt.Axis(labelAngle=0)),
         y=alt.Y("count():Q", title="Transaction Throughput"),
         tooltip=["step", "count()"]
-    ).add_params(step_select).properties(height=240).interactive()
+    ).properties(height=240).interactive()
     st.altair_chart(line_step, use_container_width=True)
 
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (Separate Scrollable Tables, 8s progression)
+# STAGE 4: FEATURE ENGINEERING (Clean Subheaders)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Stage 4: Feature Engineering":
+elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
     st.markdown("Extract delta balances, temporal components, and leak-free historical behavioral metrics across all records.")
 
@@ -332,15 +328,15 @@ elif st.session_state["current_nav"] == "Stage 4: Feature Engineering":
     if st.session_state["featured_df"] is not None:
         feat_df = st.session_state["featured_df"]
 
-        st.subheader("Base Transaction Signals (Scrollable Table)")
+        st.subheader("Base Signals")
         base_cols = ["step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig", "nameDest", "oldbalanceDest", "newbalanceDest", "isFraud"]
         st.dataframe(feat_df[base_cols], use_container_width=True, height=280)
 
-        st.subheader("Engineered Behavioral and Temporal Signals (Scrollable Table)")
+        st.subheader("Engineered Features")
         eng_cols = ["step", "nameOrig", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
         st.dataframe(feat_df[eng_cols], use_container_width=True, height=280)
 
-        st.subheader("Feature Variance and Correlation Analysis")
+        st.subheader("Feature Variance Analysis")
         st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]].describe(), use_container_width=True)
     else:
         st.info("Click 'Generate Feature Transformations' above to compute feature tables.")
@@ -350,7 +346,7 @@ elif st.session_state["current_nav"] == "Stage 4: Feature Engineering":
 # -------------------------------------------------------------
 # STAGE 5: IMBALANCE HANDLING & SPLITTING (8s progression)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Stage 5: Imbalance Handling and Splitting":
+elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
     st.markdown("Partition data strictly by simulation step to preserve causal temporal ordering and prevent lookahead bias.")
 
@@ -387,11 +383,11 @@ elif st.session_state["current_nav"] == "Stage 5: Imbalance Handling and Splitti
     handle_auto_progression(4, "Stage 6: Model Training and Evaluation", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 6: MODEL TRAINING & TELEMETRY (Interactive, 8s progression)
+# STAGE 6: MODEL TRAINING & TELEMETRY (8s progression)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Stage 6: Model Training and Evaluation":
+elif current_nav == "Stage 6: Model Training and Evaluation":
     st.title("Stage 6: Model Training and Evaluation")
-    st.markdown("Train LightGBM on the active training partition and evaluate interactive precision-recall metrics.")
+    st.markdown("Train LightGBM on the active training partition and evaluate precision-recall curves.")
 
     if st.session_state["train_df"] is None:
         st.warning("Please configure the train/test split in Stage 5 first.")
@@ -441,17 +437,17 @@ elif st.session_state["current_nav"] == "Stage 6: Model Training and Evaluation"
                 x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
                 y=alt.Y("Precision:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
                 tooltip=["Recall", "Precision"]
-            ).properties(height=280, title="Interactive Precision-Recall Trajectory").interactive()
+            ).properties(height=280, title="Precision-Recall Trajectory").interactive()
             st.altair_chart(pr_chart, use_container_width=True)
 
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE (Full Dataset Scored, 8s progression)
+# STAGE 7: PREDICTION & DECISION QUEUE (8s progression)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Stage 7: Operational Prediction and Flagging":
+elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
-    st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve) across the entire ingested dataset.")
+    st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve) across the entire dataset.")
 
     scoring_batch = st.session_state["featured_df"].copy() if st.session_state["featured_df"] is not None else st.session_state["raw_df"].copy()
 
@@ -471,7 +467,7 @@ elif st.session_state["current_nav"] == "Stage 7: Operational Prediction and Fla
             scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.05, 0.05))))
 
     scoring_batch["fraud_score"] = np.round(scores, 4)
-    # Calibrated thresholds to guarantee populated Review queues
+    # Balanced triage threshold cuts
     scoring_batch["audit_action"] = pd.cut(
         scoring_batch["fraud_score"],
         bins=[-0.1, 0.25, 0.65, 1.0],
@@ -490,12 +486,13 @@ elif st.session_state["current_nav"] == "Stage 7: Operational Prediction and Fla
     t3.metric("Block Tier (High Risk - Red)", f"{n_block:,}")
 
     st.markdown("---")
-    st.subheader("Operational Risk Distribution (Interactive Filter)")
-    st.caption("Click any decision label ('Block', 'Review', 'Approve') in the legend to isolate points.")
+    st.subheader("Operational Risk Distribution")
+    st.caption("Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
 
     selection = alt.selection_point(fields=["audit_action"], bind="legend")
+    scatter_sample = scoring_batch.sample(n=min(len(scoring_batch), 4000), random_state=42) if len(scoring_batch) > 4000 else scoring_batch
 
-    scatter_chart = alt.Chart(scoring_batch).mark_circle(size=70).encode(
+    scatter_chart = alt.Chart(scatter_sample).mark_circle(size=70).encode(
         x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
         y=alt.Y("fraud_score:Q", title="Fraud Risk Score", axis=alt.Axis(labelAngle=0)),
         color=alt.Color(
@@ -513,19 +510,19 @@ elif st.session_state["current_nav"] == "Stage 7: Operational Prediction and Fla
         status_box = st.empty()
         pbar = st.progress(0.0)
         for s in range(8, 0, -1):
-            status_box.info(f"Automatic Mode Active: Pipeline processing complete across {len(scoring_batch):,} records! Jumping to Dashboard in {s} seconds...")
+            status_box.info(f"Automatic Mode: Finalizing batch inference across {len(scoring_batch):,} transactions. Moving to Dashboard in {s} seconds...")
             pbar.progress((8 - s + 1) / 8.0)
             time.sleep(1.0)
         status_box.empty()
         pbar.empty()
         st.session_state["auto_running"] = False
-        st.session_state["current_nav"] = "Dashboard"
+        st.session_state["nav_selection"] = "Dashboard"
         st.rerun()
 
 # -------------------------------------------------------------
-# DASHBOARD (Interactive Visuals & Review Telemetry)
+# DASHBOARD (Clean Titles & Comprehensive Analytics)
 # -------------------------------------------------------------
-elif st.session_state["current_nav"] == "Dashboard":
+elif current_nav == "Dashboard":
     st.title("Dashboard")
 
     if not st.session_state["pipeline_complete"] and st.session_state["scored_batch"] is None:
@@ -543,19 +540,19 @@ elif st.session_state["current_nav"] == "Dashboard":
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Audited Volume", f"{total_tx:,} tx")
         k2.metric("Gross Exposure", f"${total_vol:,.2f}")
-        k3.metric("Review Queue (Manual)", f"{n_review:,} ({((n_review/max(1, total_tx))*100):.1f}%)")
-        k4.metric("High Risk (Blocked)", f"{n_block:,} ({((n_block/max(1, total_tx))*100):.1f}%)")
+        k3.metric("Review Queue", f"{n_review:,} ({((n_review/max(1, total_tx))*100):.1f}%)")
+        k4.metric("High Risk Blocked", f"{n_block:,} ({((n_block/max(1, total_tx))*100):.1f}%)")
 
         st.markdown("---")
 
-        # Row 1 Visuals: Interactive Scatter Plot & Action Volume Bar Chart
+        # Row 1 Visuals
         v_col1, v_col2 = st.columns(2)
         with v_col1:
             st.subheader("Decision Classification Distribution")
-            st.caption("Interactive Legend: Click any decision tier to isolate records.")
             dash_selection = alt.selection_point(fields=["audit_action"], bind="legend")
+            dash_scatter_sample = scored.sample(n=min(len(scored), 4000), random_state=42) if len(scored) > 4000 else scored
 
-            scatter_dash = alt.Chart(scored).mark_circle(size=65).encode(
+            scatter_dash = alt.Chart(dash_scatter_sample).mark_circle(size=65).encode(
                 x=alt.X("amount:Q", title="Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
                 y=alt.Y("fraud_score:Q", title="Fraud Risk Score", axis=alt.Axis(labelAngle=0)),
                 color=alt.Color("audit_action:N", scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS), legend=alt.Legend(title="Decision Tier")),
@@ -566,10 +563,9 @@ elif st.session_state["current_nav"] == "Dashboard":
 
         with v_col2:
             st.subheader("Operational Volume by Action Tier")
-            st.caption("Interactive Bar Selection: Click a bar to highlight volume.")
             action_counts = scored["audit_action"].value_counts().reindex(ACTION_DOMAIN, fill_value=0).reset_index()
             action_counts.columns = ["audit_action", "count"]
-            
+
             bar_select = alt.selection_point(fields=["audit_action"])
             chart_bar = alt.Chart(action_counts).mark_bar().encode(
                 x=alt.X("audit_action:N", title="Action Category", axis=alt.Axis(labelAngle=0)),
@@ -585,11 +581,10 @@ elif st.session_state["current_nav"] == "Dashboard":
 
         st.markdown("---")
 
-        # Row 2 Visuals: Interactive Donut Chart & Operational Funnel Pipeline Chart
+        # Row 2 Visuals
         v_col3, v_col4 = st.columns(2)
         with v_col3:
-            st.subheader("Triage Composition (Interactive Donut Chart)")
-            st.caption("Click segments to filter triage proportions.")
+            st.subheader("Triage Composition")
             donut_select = alt.selection_point(fields=["audit_action"])
             donut_chart = alt.Chart(action_counts).mark_arc(innerRadius=65).encode(
                 theta=alt.Theta("count:Q", title="Volume"),
@@ -603,7 +598,7 @@ elif st.session_state["current_nav"] == "Dashboard":
             st.altair_chart(donut_chart, use_container_width=True)
 
         with v_col4:
-            st.subheader("Operational Triage Funnel (Pipeline Conversion)")
+            st.subheader("Operational Triage Funnel")
             raw_len = len(st.session_state["raw_df"]) if "raw_df" in st.session_state else total_tx
             clean_len = len(st.session_state["cleaned_df"]) if st.session_state["cleaned_df"] is not None else total_tx
             flagged_total = n_block + n_review
