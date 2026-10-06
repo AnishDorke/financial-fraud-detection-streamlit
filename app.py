@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Styling and Badge Contracts (Zero Emojis)
+# Solar styling and badges (Zero emojis)
 st.markdown("""
 <style>
     .metric-card {
@@ -43,8 +43,19 @@ st.markdown("""
 ACTION_COLORS = ["#E05656", "#F2C94C", "#2F80ED"]
 ACTION_DOMAIN = ["Block", "Review", "Approve"]
 
-# High-throughput vectorized generator (optimized for 500k to 1M rows)
-def generate_unclean_dataset(n_rows: int = 500000) -> pd.DataFrame:
+STAGES = [
+    "Stage 1: Continuous Data Ingestion",
+    "Stage 2: Cleaning and Data Validation",
+    "Stage 3: Exploratory Data Analysis",
+    "Stage 4: Feature Engineering",
+    "Stage 5: Imbalance Handling and Splitting",
+    "Stage 6: Model Training and Evaluation",
+    "Stage 7: Operational Prediction and Flagging",
+    "Dashboard"
+]
+
+# Fast, memory-efficient data generator
+def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     np.random.seed(int(pd.Timestamp.now().timestamp()) % 100000)
     steps = np.sort(np.random.randint(1, 35, size=n_rows))
     types = np.random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
@@ -57,7 +68,7 @@ def generate_unclean_dataset(n_rows: int = 500000) -> pd.DataFrame:
     new_dest = old_dest + amounts
 
     is_fraud = np.zeros(n_rows, dtype=int)
-    fraud_count = max(10, int(n_rows * 0.045))
+    fraud_count = max(8, int(n_rows * 0.045))
     fraud_idx = np.random.choice(n_rows, size=fraud_count, replace=False)
     for i in fraud_idx:
         types[i] = "TRANSFER" if np.random.rand() > 0.5 else "CASH_OUT"
@@ -92,12 +103,12 @@ def generate_unclean_dataset(n_rows: int = 500000) -> pd.DataFrame:
         elif issue == "negative_balance":
             df.loc[idx, "newbalanceOrig"] = -abs(df.loc[idx, "newbalanceOrig"])
 
-    dupe_rows = df.sample(n=max(5, int(n_rows * 0.02)), replace=True)
+    dupe_rows = df.sample(n=max(4, int(n_rows * 0.02)), replace=True)
     return pd.concat([df, dupe_rows], ignore_index=True)
 
-# State initialization with 500,000 historical records
+# State initialization
 if "raw_df" not in st.session_state:
-    st.session_state["raw_df"] = generate_unclean_dataset(500000)
+    st.session_state["raw_df"] = generate_unclean_dataset(50000)
 if "cleaned_df" not in st.session_state:
     st.session_state["cleaned_df"] = None
 if "featured_df" not in st.session_state:
@@ -116,61 +127,56 @@ if "auto_running" not in st.session_state:
     st.session_state["auto_running"] = False
 if "auto_stage_index" not in st.session_state:
     st.session_state["auto_stage_index"] = 0
+if "target_nav" not in st.session_state:
+    st.session_state["target_nav"] = STAGES[0]
 
-STAGES = [
-    "Stage 1: Continuous Data Ingestion",
-    "Stage 2: Cleaning and Data Validation",
-    "Stage 3: Exploratory Data Analysis",
-    "Stage 4: Feature Engineering",
-    "Stage 5: Imbalance Handling and Splitting",
-    "Stage 6: Model Training and Evaluation",
-    "Stage 7: Operational Prediction and Flagging",
-    "Dashboard"
-]
-
-if "nav_selection" not in st.session_state:
-    st.session_state["nav_selection"] = STAGES[0]
-
-# --- SIDEBAR NAVIGATION (1-CLICK RESPONSIVENESS) ---
+# --- SAFE NAVIGATION SYNC (PREVENTS StreamlitWidgetAlreadyInstantiatedError) ---
 st.sidebar.title("Fraud Detection System")
+
+def on_nav_change():
+    st.session_state["target_nav"] = st.session_state["nav_radio_key"]
+
+default_idx = STAGES.index(st.session_state["target_nav"]) if st.session_state["target_nav"] in STAGES else 0
 
 current_nav = st.sidebar.radio(
     "Navigation Menu:",
     STAGES,
-    key="nav_selection"
+    index=default_idx,
+    key="nav_radio_key",
+    on_change=on_nav_change
 )
+st.session_state["target_nav"] = current_nav
 
-# Sidebar Automation Toggle
 st.sidebar.markdown("---")
 auto_mode = st.sidebar.toggle("Automatic Pipeline Mode", value=st.session_state["auto_running"])
-
 if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
+
+def trigger_next_stage(next_stage_name: str, stage_idx: int):
+    st.session_state["auto_stage_index"] = stage_idx
+    st.session_state["target_nav"] = next_stage_name
+    st.rerun()
 
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 8):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
         pbar = st.progress(0.0)
         for s in range(seconds, 0, -1):
-            status_box.info(f"Automatic Mode: Executing stage calculations. Advancing to next stage in {s} seconds...")
+            status_box.info(f"Automatic Mode: Executing calculations. Advancing to next stage in {s} seconds...")
             pbar.progress((seconds - s + 1) / float(seconds))
             time.sleep(1.0)
         status_box.empty()
         pbar.empty()
-        st.session_state["auto_stage_index"] = current_stage_idx + 1
-        st.session_state["nav_selection"] = next_stage_name
-        st.rerun()
+        trigger_next_stage(next_stage_name, current_stage_idx + 1)
 
 # -------------------------------------------------------------
-# STAGE 1: INGESTION (500k Preloaded, Append vs Scratch, Range 100 to 1M)
+# STAGE 1: INGESTION
 # -------------------------------------------------------------
 if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
-    st.markdown("Preloaded with 500,000 baseline historical transactions. Select whether to append new transactions or start fresh from scratch, choosing between slider increments of 500 or typing any whole number from 100 to 1,000,000.")
+    st.markdown("Preloaded with 50,000 historical transactions. Choose whether to append or start fresh from scratch, selecting between slider partitions or typing any whole number.")
 
-    st.subheader("Data Configuration and Ingestion Controls")
-    
     ingest_mode = st.radio(
         "Ingestion Strategy:",
         ["Append to Active Dataset", "Start from Scratch (New Dataset)"],
@@ -179,14 +185,14 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
 
     input_method = st.radio(
         "Record Selection Method:",
-        ["Scroll (Slider in steps of 500)", "Type Exact Whole Number (100 to 1,000,000)"],
+        ["Scroll (Slider in steps of 500)", "Type Exact Whole Number (100 to 500,000)"],
         horizontal=True
     )
 
     if input_method == "Scroll (Slider in steps of 500)":
-        target_records = st.slider("Select Record Count:", min_value=500, max_value=1000000, value=50000, step=500)
+        target_records = st.slider("Select Record Count:", min_value=500, max_value=500000, value=min(len(st.session_state["raw_df"]), 500000), step=500)
     else:
-        target_records = st.number_input("Enter Exact Number of Records (>100):", min_value=100, max_value=1000000, value=50000, step=1)
+        target_records = st.number_input("Enter Exact Number of Records (>100):", min_value=100, max_value=500000, value=len(st.session_state["raw_df"]), step=1)
 
     c_btn1, c_btn2 = st.columns([1, 1])
     with c_btn1:
@@ -201,7 +207,6 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                     st.session_state["raw_df"] = new_data
                     st.success(f"Initialized fresh dataset with {len(st.session_state['raw_df']):,} records.")
 
-                # Invalidate downstream stages
                 st.session_state["cleaned_df"] = None
                 st.session_state["featured_df"] = None
                 st.session_state["train_df"] = None
@@ -212,9 +217,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
 
                 if auto_mode:
                     st.session_state["auto_running"] = True
-                    st.session_state["auto_stage_index"] = 1
-                    st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
-                    st.rerun()
+                    trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
     with c_btn2:
         uploaded_csv = st.file_uploader("Or Upload Custom CSV Batch", type=["csv"])
@@ -237,9 +240,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
 
             if auto_mode:
                 st.session_state["auto_running"] = True
-                st.session_state["auto_stage_index"] = 1
-                st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
-                st.rerun()
+                trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
     st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records)")
     st.dataframe(st.session_state["raw_df"].head(1000), use_container_width=True, height=420)
@@ -329,7 +330,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (Clean Subheaders)
+# STAGE 4: FEATURE ENGINEERING
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -428,17 +429,16 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
         def fit_active_model():
             feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                             "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
-            
-            # Subsample training data to 50k rows max if dataset is massive to ensure fast training
-            train_sub = train_df.sample(n=min(len(train_df), 50000), random_state=42) if len(train_df) > 50000 else train_df
-            test_sub = test_df.sample(n=min(len(test_df), 20000), random_state=42) if len(test_df) > 20000 else test_df
+
+            train_sub = train_df.sample(n=min(len(train_df), 40000), random_state=42) if len(train_df) > 40000 else train_df
+            test_sub = test_df.sample(n=min(len(test_df), 15000), random_state=42) if len(test_df) > 15000 else test_df
 
             X_train, y_train = train_sub[feature_cols], train_sub["isFraud"]
             X_test, y_test = test_sub[feature_cols], test_sub["isFraud"]
             scale_pos = (len(y_train) - y_train.sum()) / max(1, y_train.sum())
 
             clf = lgb.LGBMClassifier(
-                n_estimators=80,
+                n_estimators=75,
                 learning_rate=0.06,
                 scale_pos_weight=scale_pos,
                 random_state=42,
@@ -550,11 +550,10 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
         status_box.empty()
         pbar.empty()
         st.session_state["auto_running"] = False
-        st.session_state["nav_selection"] = "Dashboard"
-        st.rerun()
+        trigger_next_stage("Dashboard", 7)
 
 # -------------------------------------------------------------
-# DASHBOARD (Clean Titles & Comprehensive Analytics)
+# DASHBOARD
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
@@ -570,7 +569,6 @@ elif current_nav == "Dashboard":
         n_approve = int((scored["audit_action"] == "Approve").sum())
         actual_fraud = int(scored["isFraud"].sum()) if "isFraud" in scored else 0
 
-        # KPI Metrics
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Audited Volume", f"{total_tx:,} tx")
         k2.metric("Gross Exposure", f"${total_vol:,.2f}")
@@ -579,7 +577,6 @@ elif current_nav == "Dashboard":
 
         st.markdown("---")
 
-        # Row 1 Visuals
         v_col1, v_col2 = st.columns(2)
         with v_col1:
             st.subheader("Decision Classification Distribution")
@@ -615,7 +612,6 @@ elif current_nav == "Dashboard":
 
         st.markdown("---")
 
-        # Row 2 Visuals
         v_col3, v_col4 = st.columns(2)
         with v_col3:
             st.subheader("Triage Composition")
