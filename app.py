@@ -163,13 +163,14 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
+# Top-anchored progress controller
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7, progress_slot=None):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         target = progress_slot if progress_slot is not None else st
-        pbar = target.progress(0.0, text=f"Automatic Pipeline Active: Processing stage calculations ({seconds}s remaining)...")
+        pbar = target.progress(0.0, text=f"Automatic Pipeline Active: Processing calculations ({seconds}s remaining)...")
         for s in range(seconds, 0, -1):
             fraction = (seconds - s + 1) / float(seconds)
-            pbar.progress(fraction, text=f"Automatic Pipeline Active: Processing stage calculations... Advancing in {s}s")
+            pbar.progress(fraction, text=f"Automatic Pipeline Active: Executing stage calculations... Advancing in {s}s")
             time.sleep(1.0)
         pbar.empty()
         trigger_next_stage(next_stage_name, current_stage_idx + 1)
@@ -182,6 +183,9 @@ def reset_downstream_stages():
     st.session_state["trained_model"] = None
     st.session_state["scored_batch"] = None
     st.session_state["pipeline_complete"] = False
+
+# Helper flag: checks if automated mode is engaged
+is_auto = auto_mode or st.session_state["auto_running"]
 
 # -------------------------------------------------------------
 # STAGE 1: INGESTION
@@ -261,7 +265,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 st.session_state["auto_running"] = True
                 trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
-    if not (auto_mode or st.session_state["auto_running"]):
+    if not is_auto:
         st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records - Latest First)")
         st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
 
@@ -298,7 +302,7 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     if st.session_state["auto_running"] and st.session_state["cleaned_df"] is None:
         st.session_state["cleaned_df"] = execute_cleaning()
 
-    if not (auto_mode or st.session_state["auto_running"]):
+    if not is_auto:
         if st.button("Run Data Cleaning and Sanitization"):
             with st.spinner("Sanitizing active dataset..."):
                 st.session_state["cleaned_df"] = execute_cleaning()
@@ -417,7 +421,7 @@ elif current_nav == "Stage 4: Feature Engineering":
     if st.session_state["auto_running"] and st.session_state["featured_df"] is None:
         st.session_state["featured_df"] = perform_feature_engineering()
 
-    if not (auto_mode or st.session_state["auto_running"]):
+    if not is_auto:
         if st.button("Generate Feature Transformations"):
             with st.spinner("Extracting features..."):
                 st.session_state["featured_df"] = perform_feature_engineering()
@@ -480,7 +484,7 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
         with split_c1:
             step_slider_max = max(min_step + 1, max_step)
             split_step = st.slider("Select Chronological Split Step:", min_value=min_step, max_value=step_slider_max, value=min(calculated_split, step_slider_max - 1))
-            if not (auto_mode or st.session_state["auto_running"]):
+            if not is_auto:
                 if st.button("Apply Partition"):
                     apply_partition(split_step)
                     st.success("Chronological split established.")
@@ -549,7 +553,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
         if st.session_state["auto_running"] and st.session_state["trained_model"] is None:
             fit_active_model()
 
-        if not (auto_mode or st.session_state["auto_running"]):
+        if not is_auto:
             if st.button("Train LightGBM Model"):
                 with st.spinner("Fitting LightGBM classifier..."):
                     fit_active_model()
@@ -572,7 +576,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE (Guaranteed: ~91% Approve, ~5.5% Review, ~3.5% Block)
+# STAGE 7: PREDICTION & DECISION QUEUE
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
@@ -599,15 +603,8 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
 
     scoring_batch["fraud_score"] = np.round(raw_scores, 4)
 
-    # ---------------------------------------------------------
-    # STRICT TRIAGE HIERARCHY:
-    # 1. Start all records as Approve (the vast ~91% majority)
-    # 2. Assign top 3.5% highest scores + confirmed fraud to Block (~3.5% to 4%)
-    # 3. Assign next 5.5% highest scores to Review (~5.5%)
-    # ---------------------------------------------------------
+    # Inverted Pyramid: ~91% Approve, ~5.5% Review, ~3.5% Block
     actions = np.full(N, "Approve", dtype=object)
-
-    # Sort indices by fraud score descending
     sorted_indices = np.argsort(-scoring_batch["fraud_score"].values)
     
     n_target_block = max(25, int(N * 0.035))
@@ -615,14 +612,12 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
 
     block_indices = set(sorted_indices[:n_target_block])
     if "isFraud" in scoring_batch:
-        # Ground truth confirmed fraud is always added to Block
         ground_fraud = set(scoring_batch.index[scoring_batch["isFraud"] == 1])
         block_indices = block_indices.union(ground_fraud)
 
     for idx in block_indices:
         actions[idx] = "Block"
 
-    # Fill review with next highest scores (excluding Block)
     review_assigned = 0
     for idx in sorted_indices:
         if idx not in block_indices:
@@ -644,31 +639,30 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     t2.metric("Review Tier (Manual Queue - Yellow)", f"{n_review:,} ({(n_review/N*100):.1f}%)")
     t3.metric("Block Tier (High Risk - Red)", f"{n_block:,} ({(n_block/N*100):.1f}%)")
 
-    st.markdown("---")
-    st.subheader("Operational Risk Distribution")
-    st.caption("Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
+    # In automatic mode, suppress intermediate duplicate scatter plot to maintain focus on countdown
+    if not is_auto:
+        st.markdown("---")
+        st.subheader("Operational Risk Distribution")
+        selection = alt.selection_point(fields=["audit_action"], bind="legend")
+        scatter_sample = scoring_batch.tail(min(len(scoring_batch), 4000)).reset_index(drop=True)
 
-    selection = alt.selection_point(fields=["audit_action"], bind="legend")
-    scatter_sample = scoring_batch.tail(min(len(scoring_batch), 4000)).reset_index(drop=True)
-
-    scatter_chart = alt.Chart(scatter_sample).mark_circle(size=70).encode(
-        x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("fraud_score:Q", title="Fraud Risk Score", axis=alt.Axis(labelAngle=0)),
-        color=alt.Color(
-            "audit_action:N",
-            scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
-            legend=alt.Legend(title="Audit Action (Click to Filter)")
-        ),
-        opacity=alt.condition(selection, alt.value(0.85), alt.value(0.1)),
-        tooltip=["step", "type", "amount", "fraud_score", "audit_action"]
-    ).add_params(selection).properties(height=360).interactive()
-
-    st.altair_chart(scatter_chart, use_container_width=True)
+        scatter_chart = alt.Chart(scatter_sample).mark_circle(size=70).encode(
+            x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("fraud_score:Q", title="Fraud Risk Score", axis=alt.Axis(labelAngle=0)),
+            color=alt.Color(
+                "audit_action:N",
+                scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
+                legend=alt.Legend(title="Audit Action (Click to Filter)")
+            ),
+            opacity=alt.condition(selection, alt.value(0.85), alt.value(0.1)),
+            tooltip=["step", "type", "amount", "fraud_score", "audit_action"]
+        ).add_params(selection).properties(height=360).interactive()
+        st.altair_chart(scatter_chart, use_container_width=True)
 
     handle_auto_progression(6, "Dashboard", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# DASHBOARD
+# DASHBOARD (Final Destination)
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
