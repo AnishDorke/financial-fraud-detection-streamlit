@@ -25,7 +25,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean Solar theme styling (Zero emojis)
 st.markdown("""
 <style>
     .metric-card {
@@ -56,7 +55,6 @@ STAGES = [
     "Dashboard"
 ]
 
-# --- ROBUST PROGRAMMATIC NAVIGATION ---
 if "pending_nav" in st.session_state:
     st.session_state["nav_radio_key"] = st.session_state.pop("pending_nav")
 elif "nav_radio_key" not in st.session_state:
@@ -67,26 +65,34 @@ def trigger_next_stage(next_stage_name: str, stage_idx: int):
     st.session_state["pending_nav"] = next_stage_name
     st.rerun()
 
+# Dynamic Generator with Variable Regime Shifts so EDA varies noticeably per batch
 def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     seed_val = int(time.time() * 1000) % 1000000
     rng = np.random.default_rng(seed_val)
     
+    # Introduce random regime distribution shifts per generation
+    channel_mix = rng.dirichlet(np.array([3.5, 1.5, 3.0, 0.8, 1.2]))
     steps = rng.integers(1, 35, size=n_rows)
-    types = rng.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
-    amounts = np.round(rng.exponential(scale=65000, size=n_rows) + 15.0, 2)
+    types = rng.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=channel_mix)
+    
+    base_scale = rng.uniform(45000, 85000)
+    amounts = np.round(rng.exponential(scale=base_scale, size=n_rows) + 15.0, 2)
     orig_ids = [f"C{x}" for x in rng.integers(100000, 999999, size=n_rows)]
     dest_ids = [f"M{rng.integers(100000, 999999)}" if t == "PAYMENT" else f"C{rng.integers(100000, 999999)}" for t in types]
-    old_orig = np.round(rng.exponential(scale=70000, size=n_rows), 2)
+    old_orig = np.round(rng.exponential(scale=base_scale * 1.1, size=n_rows), 2)
     new_orig = np.maximum(0.0, old_orig - amounts)
-    old_dest = np.round(rng.exponential(scale=45000, size=n_rows), 2)
+    old_dest = np.round(rng.exponential(scale=base_scale * 0.7, size=n_rows), 2)
     new_dest = old_dest + amounts
 
+    # Variable fraud rate between 3.0% and 7.5% per generation
+    fraud_rate = rng.uniform(0.03, 0.075)
+    fraud_count = max(8, int(n_rows * fraud_rate))
     is_fraud = np.zeros(n_rows, dtype=int)
-    fraud_count = max(8, int(n_rows * rng.uniform(0.035, 0.06)))
     fraud_idx = rng.choice(n_rows, size=fraud_count, replace=False)
+    
     for i in fraud_idx:
-        types[i] = "TRANSFER" if rng.random() > 0.5 else "CASH_OUT"
-        amounts[i] = old_orig[i] = float(rng.uniform(250000, 950000))
+        types[i] = "TRANSFER" if rng.random() > 0.45 else "CASH_OUT"
+        amounts[i] = old_orig[i] = float(rng.uniform(200000, 980000))
         new_orig[i] = 0.0
         is_fraud[i] = 1
 
@@ -143,7 +149,6 @@ if "auto_running" not in st.session_state:
 if "auto_stage_index" not in st.session_state:
     st.session_state["auto_stage_index"] = 0
 
-# --- SIDEBAR NAVIGATION ---
 st.sidebar.title("Fraud Detection System")
 
 current_nav = st.sidebar.radio(
@@ -158,7 +163,6 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-# 7-second countdown controller starting from Stage 2
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
@@ -185,7 +189,7 @@ def reset_downstream_stages():
 # -------------------------------------------------------------
 if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
-    st.markdown("Preloaded with 50,000 baseline historical transactions. Select whether to append new records or start fresh from scratch. When Automatic Pipeline Mode is enabled, clicking the ingestion button automatically triggers the 7-second sequential pipeline starting from Stage 2.")
+    st.markdown("Preloaded with 50,000 baseline historical transactions. Select whether to append new records or start fresh from scratch.")
 
     col_rst1, col_rst2 = st.columns([3, 1])
     with col_rst2:
@@ -261,7 +265,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
     st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
 
 # -------------------------------------------------------------
-# STAGE 2: CLEANING & VALIDATION (Table hidden during auto mode)
+# STAGE 2: CLEANING & VALIDATION
 # -------------------------------------------------------------
 elif current_nav == "Stage 2: Cleaning and Data Validation":
     st.title("Stage 2: Data Cleaning and Integrity Audit")
@@ -306,42 +310,59 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (Zero tables, charts only)
+# STAGE 3: EXPLORATORY DATA ANALYSIS (Fully Reactive & Scaled)
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
     st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
-    chart_sample = df.tail(min(len(df), 25000)).reset_index(drop=True)
+    
+    # 1. Summary Cards dynamically reflecting the exact active ingestion
+    total_active_tx = len(df)
+    total_fraud_count = int(df["isFraud"].sum())
+    fraud_pct = (total_fraud_count / max(1, total_active_tx)) * 100
+    mean_val = float(df["amount"].mean())
 
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Active Total Volume", f"{total_active_tx:,} tx")
+    k2.metric("Observed Fraud Incidence", f"{total_fraud_count:,} ({fraud_pct:.2f}%)")
+    k3.metric("Average Transaction Amount", f"${mean_val:,.2f}")
+
+    st.markdown("---")
+
+    # 2. Channel Breakdown Aggregated over the entire active dataset
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
         st.subheader("Transaction Volume by Type and Target")
-        channel_counts = Counter(zip(chart_sample["type"].astype(str), chart_sample["isFraud"].astype(int)))
+        channel_counts = Counter(zip(df["type"].astype(str), df["isFraud"].astype(int)))
         channel_summary = pd.DataFrame([
-            {"type": k[0], "isFraud": k[1], "count": v}
+            {"type": k[0], "isFraud": str(k[1]), "count": v}
             for k, v in channel_counts.items()
         ])
         chart_tx = alt.Chart(channel_summary).mark_bar().encode(
             x=alt.X("type:N", title="Transaction Channel", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("count:Q", title="Volume"),
-            color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
+            y=alt.Y("count:Q", title="Transaction Count"),
+            color=alt.Color("isFraud:N", scale=alt.Scale(domain=["0", "1"], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
             tooltip=["type", "isFraud", "count"]
         ).properties(height=300).interactive()
         st.altair_chart(chart_tx, use_container_width=True)
 
     with eda_c2:
         st.subheader("Amount Distribution by Target Class")
-        chart_box = alt.Chart(chart_sample).mark_boxplot().encode(
-            x=alt.X("isFraud:N", title="Class (0 = Legitimate, 1 = Fraud)", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("amount:Q", scale=alt.Scale(type="log"), title="Transaction Amount ($)"),
-            color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]))
+        # Subsample for boxplot rendering to avoid Altair payload overload
+        box_sample = df.sample(n=min(len(df), 10000), random_state=42).copy()
+        box_sample["Target"] = box_sample["isFraud"].map({0: "Legitimate", 1: "Fraud"})
+        chart_box = alt.Chart(box_sample).mark_boxplot().encode(
+            x=alt.X("Target:N", title="Class", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("amount:Q", scale=alt.Scale(type="log"), title="Amount ($)"),
+            color=alt.Color("Target:N", scale=alt.Scale(domain=["Legitimate", "Fraud"], range=["#2F80ED", "#E05656"]))
         ).properties(height=300).interactive()
         st.altair_chart(chart_box, use_container_width=True)
 
+    # 3. Dynamic Velocity Across Simulation Steps
     st.subheader("Diurnal Velocity by Simulation Step")
-    step_counts = Counter(chart_sample["step"].astype(int))
+    step_counts = Counter(df["step"].astype(int))
     step_summary = pd.DataFrame([
         {"step": k, "throughput": v}
         for k, v in sorted(step_counts.items())
@@ -421,7 +442,7 @@ elif current_nav == "Stage 4: Feature Engineering":
     handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 5: IMBALANCE HANDLING & SPLITTING (Metrics only, zero extra tables)
+# STAGE 5: IMBALANCE HANDLING & SPLITTING
 # -------------------------------------------------------------
 elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
