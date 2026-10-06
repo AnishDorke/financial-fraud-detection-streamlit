@@ -24,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Solar styling and badges (Zero emojis)
+# Clean Solar theme styling (Zero emojis)
 st.markdown("""
 <style>
     .metric-card {
@@ -42,6 +42,7 @@ st.markdown("""
 
 ACTION_COLORS = ["#E05656", "#F2C94C", "#2F80ED"]
 ACTION_DOMAIN = ["Block", "Review", "Approve"]
+MAX_INGEST_LIMIT = 500000
 
 STAGES = [
     "Stage 1: Continuous Data Ingestion",
@@ -54,25 +55,27 @@ STAGES = [
     "Dashboard"
 ]
 
-# Fast, memory-efficient data generator
 def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
-    np.random.seed(int(pd.Timestamp.now().timestamp()) % 100000)
-    steps = np.sort(np.random.randint(1, 35, size=n_rows))
-    types = np.random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
-    amounts = np.round(np.random.exponential(scale=65000, size=n_rows) + 15.0, 2)
-    orig_ids = [f"C{np.random.randint(100000, 999999)}" for _ in range(n_rows)]
-    dest_ids = [f"M{np.random.randint(100000, 999999)}" if t == "PAYMENT" else f"C{np.random.randint(100000, 999999)}" for t in types]
-    old_orig = np.round(np.random.exponential(scale=70000, size=n_rows), 2)
+    # Use variable dynamic seed so every generation produces distinct values
+    seed_val = int(time.time() * 1000) % 1000000
+    rng = np.random.default_rng(seed_val)
+    
+    steps = rng.integers(1, 35, size=n_rows)
+    types = rng.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
+    amounts = np.round(rng.exponential(scale=65000, size=n_rows) + 15.0, 2)
+    orig_ids = [f"C{x}" for x in rng.integers(100000, 999999, size=n_rows)]
+    dest_ids = [f"M{rng.integers(100000, 999999)}" if t == "PAYMENT" else f"C{rng.integers(100000, 999999)}" for t in types]
+    old_orig = np.round(rng.exponential(scale=70000, size=n_rows), 2)
     new_orig = np.maximum(0.0, old_orig - amounts)
-    old_dest = np.round(np.random.exponential(scale=45000, size=n_rows), 2)
+    old_dest = np.round(rng.exponential(scale=45000, size=n_rows), 2)
     new_dest = old_dest + amounts
 
     is_fraud = np.zeros(n_rows, dtype=int)
-    fraud_count = max(8, int(n_rows * 0.045))
-    fraud_idx = np.random.choice(n_rows, size=fraud_count, replace=False)
+    fraud_count = max(8, int(n_rows * rng.uniform(0.035, 0.06)))
+    fraud_idx = rng.choice(n_rows, size=fraud_count, replace=False)
     for i in fraud_idx:
-        types[i] = "TRANSFER" if np.random.rand() > 0.5 else "CASH_OUT"
-        amounts[i] = old_orig[i] = float(np.random.uniform(250000, 950000))
+        types[i] = "TRANSFER" if rng.random() > 0.5 else "CASH_OUT"
+        amounts[i] = old_orig[i] = float(rng.uniform(250000, 950000))
         new_orig[i] = 0.0
         is_fraud[i] = 1
 
@@ -89,14 +92,15 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
         "isFraud": is_fraud
     })
 
-    contam_pct = np.random.uniform(0.15, 0.28)
+    # Inject 15% to 28% contamination
+    contam_pct = rng.uniform(0.15, 0.28)
     n_contam = int(n_rows * contam_pct)
-    contam_idx = np.random.choice(n_rows, size=n_contam, replace=False)
+    contam_idx = rng.choice(n_rows, size=n_contam, replace=False)
 
     for idx in contam_idx:
-        issue = np.random.choice(["null_val", "negative_amount", "negative_balance"])
+        issue = rng.choice(["null_val", "negative_amount", "negative_balance"])
         if issue == "null_val":
-            col = np.random.choice(["amount", "oldbalanceOrg", "newbalanceDest"])
+            col = rng.choice(["amount", "oldbalanceOrg", "newbalanceDest"])
             df.loc[idx, col] = np.nan
         elif issue == "negative_amount":
             df.loc[idx, "amount"] = -abs(df.loc[idx, "amount"])
@@ -130,7 +134,7 @@ if "auto_stage_index" not in st.session_state:
 if "target_nav" not in st.session_state:
     st.session_state["target_nav"] = STAGES[0]
 
-# --- SAFE NAVIGATION SYNC (PREVENTS StreamlitWidgetAlreadyInstantiatedError) ---
+# --- SIDEBAR NAVIGATION (1-CLICK SYNC) ---
 st.sidebar.title("Fraud Detection System")
 
 def on_nav_change():
@@ -170,12 +174,30 @@ def handle_auto_progression(current_stage_idx: int, next_stage_name: str, second
         pbar.empty()
         trigger_next_stage(next_stage_name, current_stage_idx + 1)
 
+# Helper to invalidate all downstream pipeline states upon ingestion change
+def reset_downstream_stages():
+    st.session_state["cleaned_df"] = None
+    st.session_state["featured_df"] = None
+    st.session_state["train_df"] = None
+    st.session_state["test_df"] = None
+    st.session_state["trained_model"] = None
+    st.session_state["scored_batch"] = None
+    st.session_state["pipeline_complete"] = False
+
 # -------------------------------------------------------------
-# STAGE 1: INGESTION
+# STAGE 1: INGESTION (Reset to 50k, Overflow Protection, Latest First)
 # -------------------------------------------------------------
 if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
-    st.markdown("Preloaded with 50,000 historical transactions. Choose whether to append or start fresh from scratch, selecting between slider partitions or typing any whole number.")
+    st.markdown("Preloaded with 50,000 historical transactions. Choose whether to append or start fresh from scratch, or reset to the baseline dataset.")
+
+    col_rst1, col_rst2 = st.columns([3, 1])
+    with col_rst2:
+        if st.button("Reset to Original 50k Baseline", use_container_width=True):
+            st.session_state["raw_df"] = generate_unclean_dataset(50000)
+            reset_downstream_stages()
+            st.success("Dataset reset to baseline 50,000 historical records.")
+            st.rerun()
 
     ingest_mode = st.radio(
         "Ingestion Strategy:",
@@ -192,7 +214,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
     if input_method == "Scroll (Slider in steps of 500)":
         target_records = st.slider("Select Record Count:", min_value=500, max_value=500000, value=min(len(st.session_state["raw_df"]), 500000), step=500)
     else:
-        target_records = st.number_input("Enter Exact Number of Records (>100):", min_value=100, max_value=500000, value=len(st.session_state["raw_df"]), step=1)
+        target_records = st.number_input("Enter Exact Number of Records (>100):", min_value=100, max_value=500000, value=min(len(st.session_state["raw_df"]), 500000), step=1)
 
     c_btn1, c_btn2 = st.columns([1, 1])
     with c_btn1:
@@ -201,19 +223,19 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
             with st.spinner("Generating transaction batch..."):
                 new_data = generate_unclean_dataset(int(target_records))
                 if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
-                    st.session_state["raw_df"] = pd.concat([st.session_state["raw_df"], new_data], ignore_index=True)
-                    st.success(f"Appended {len(new_data):,} records. Active dataset now contains {len(st.session_state['raw_df']):,} records.")
+                    combined = pd.concat([st.session_state["raw_df"], new_data], ignore_index=True)
+                    # Overflow protection: retain up to MAX_INGEST_LIMIT most recent
+                    if len(combined) > MAX_INGEST_LIMIT:
+                        st.session_state["raw_df"] = combined.iloc[-MAX_INGEST_LIMIT:].reset_index(drop=True)
+                        st.warning(f"Memory safety: Dataset reached volume limit. Retained the most recent {MAX_INGEST_LIMIT:,} records.")
+                    else:
+                        st.session_state["raw_df"] = combined
+                        st.success(f"Appended {len(new_data):,} records. Active dataset now contains {len(st.session_state['raw_df']):,} records.")
                 else:
                     st.session_state["raw_df"] = new_data
                     st.success(f"Initialized fresh dataset with {len(st.session_state['raw_df']):,} records.")
 
-                st.session_state["cleaned_df"] = None
-                st.session_state["featured_df"] = None
-                st.session_state["train_df"] = None
-                st.session_state["test_df"] = None
-                st.session_state["trained_model"] = None
-                st.session_state["scored_batch"] = None
-                st.session_state["pipeline_complete"] = False
+                reset_downstream_stages()
 
                 if auto_mode:
                     st.session_state["auto_running"] = True
@@ -224,26 +246,26 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
         if uploaded_csv is not None and st.button("Ingest Uploaded File", use_container_width=True):
             uploaded_df = pd.read_csv(uploaded_csv)
             if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
-                st.session_state["raw_df"] = pd.concat([st.session_state["raw_df"], uploaded_df], ignore_index=True)
-                st.success(f"Appended {len(uploaded_df):,} uploaded records. Active total: {len(st.session_state['raw_df']):,}.")
+                combined = pd.concat([st.session_state["raw_df"], uploaded_df], ignore_index=True)
+                if len(combined) > MAX_INGEST_LIMIT:
+                    st.session_state["raw_df"] = combined.iloc[-MAX_INGEST_LIMIT:].reset_index(drop=True)
+                    st.warning(f"Memory safety: Retained the most recent {MAX_INGEST_LIMIT:,} records.")
+                else:
+                    st.session_state["raw_df"] = combined
+                    st.success(f"Appended {len(uploaded_df):,} uploaded records. Active total: {len(st.session_state['raw_df']):,}.")
             else:
                 st.session_state["raw_df"] = uploaded_df
                 st.success(f"Initialized fresh dataset from upload with {len(uploaded_df):,} records.")
 
-            st.session_state["cleaned_df"] = None
-            st.session_state["featured_df"] = None
-            st.session_state["train_df"] = None
-            st.session_state["test_df"] = None
-            st.session_state["trained_model"] = None
-            st.session_state["scored_batch"] = None
-            st.session_state["pipeline_complete"] = False
+            reset_downstream_stages()
 
             if auto_mode:
                 st.session_state["auto_running"] = True
                 trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
-    st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records)")
-    st.dataframe(st.session_state["raw_df"].head(1000), use_container_width=True, height=420)
+    st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records - Latest First)")
+    # Present latest records at the top so newly ingested rows are immediately visible
+    st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
 
 # -------------------------------------------------------------
 # STAGE 2: CLEANING & VALIDATION (8s progression)
@@ -284,29 +306,31 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
 
     display_df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else raw
     status_label = "Cleaned Dataset" if st.session_state["cleaned_df"] is not None else "Raw Uncleaned Dataset"
-    st.subheader(f"{status_label} ({len(display_df):,} Records)")
-    st.dataframe(display_df.head(1000), use_container_width=True, height=420)
+    st.subheader(f"{status_label} ({len(display_df):,} Records - Latest First)")
+    st.dataframe(display_df.iloc[::-1].head(1500), use_container_width=True, height=420)
 
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (Dynamically Recalculated)
+# STAGE 3: EXPLORATORY DATA ANALYSIS (Fully Reactive to New Data)
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
     st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
-    chart_sample = df.sample(n=min(len(df), 15000), random_state=42) if len(df) > 15000 else df
+    # Dynamic sample of the most recent data reflecting new ingestions
+    chart_sample = df.tail(min(len(df), 25000))
 
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
         st.subheader("Transaction Volume by Type and Target")
-        chart_tx = alt.Chart(chart_sample).mark_bar().encode(
+        channel_summary = chart_sample.groupby(["type", "isFraud"]).size().reset_index(name="count")
+        chart_tx = alt.Chart(channel_summary).mark_bar().encode(
             x=alt.X("type:N", title="Transaction Channel", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("count():Q", title="Volume"),
+            y=alt.Y("count:Q", title="Volume"),
             color=alt.Color("isFraud:N", scale=alt.Scale(domain=[0, 1], range=["#2F80ED", "#E05656"]), legend=alt.Legend(title="Fraud Flag")),
-            tooltip=["type", "count()"]
+            tooltip=["type", "isFraud", "count"]
         ).properties(height=300).interactive()
         st.altair_chart(chart_tx, use_container_width=True)
 
@@ -320,17 +344,18 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
         st.altair_chart(chart_box, use_container_width=True)
 
     st.subheader("Diurnal Velocity by Simulation Step")
-    line_step = alt.Chart(chart_sample).mark_line(color="#F2994A", point=True).encode(
+    step_summary = chart_sample.groupby("step").size().reset_index(name="throughput")
+    line_step = alt.Chart(step_summary).mark_line(color="#F2994A", point=True).encode(
         x=alt.X("step:Q", title="Simulation Step (Hour)", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("count():Q", title="Transaction Throughput"),
-        tooltip=["step", "count()"]
+        y=alt.Y("throughput:Q", title="Transaction Throughput"),
+        tooltip=["step", "throughput"]
     ).properties(height=240).interactive()
     st.altair_chart(line_step, use_container_width=True)
 
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=8)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING
+# STAGE 4: FEATURE ENGINEERING (Latest First Tables)
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -359,13 +384,13 @@ elif current_nav == "Stage 4: Feature Engineering":
     if st.session_state["featured_df"] is not None:
         feat_df = st.session_state["featured_df"]
 
-        st.subheader("Base Signals")
+        st.subheader("Base Signals (Latest First)")
         base_cols = ["step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig", "nameDest", "oldbalanceDest", "newbalanceDest", "isFraud"]
-        st.dataframe(feat_df[base_cols].head(1000), use_container_width=True, height=280)
+        st.dataframe(feat_df[base_cols].iloc[::-1].head(1500), use_container_width=True, height=280)
 
-        st.subheader("Engineered Features")
+        st.subheader("Engineered Features (Latest First)")
         eng_cols = ["step", "nameOrig", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
-        st.dataframe(feat_df[eng_cols].head(1000), use_container_width=True, height=280)
+        st.dataframe(feat_df[eng_cols].iloc[::-1].head(1500), use_container_width=True, height=280)
 
         st.subheader("Feature Variance Analysis")
         st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]].describe(), use_container_width=True)
@@ -482,7 +507,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
-    st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve) across the entire dataset.")
+    st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve) across the active dataset.")
 
     scoring_batch = st.session_state["featured_df"].copy() if st.session_state["featured_df"] is not None else st.session_state["raw_df"].copy()
 
@@ -524,7 +549,8 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.caption("Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
 
     selection = alt.selection_point(fields=["audit_action"], bind="legend")
-    scatter_sample = scoring_batch.sample(n=min(len(scoring_batch), 4000), random_state=42) if len(scoring_batch) > 4000 else scoring_batch
+    # Take sample from the latest records
+    scatter_sample = scoring_batch.tail(min(len(scoring_batch), 4000))
 
     scatter_chart = alt.Chart(scatter_sample).mark_circle(size=70).encode(
         x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
@@ -581,7 +607,7 @@ elif current_nav == "Dashboard":
         with v_col1:
             st.subheader("Decision Classification Distribution")
             dash_selection = alt.selection_point(fields=["audit_action"], bind="legend")
-            dash_scatter_sample = scored.sample(n=min(len(scored), 4000), random_state=42) if len(scored) > 4000 else scored
+            dash_scatter_sample = scored.tail(min(len(scored), 4000))
 
             scatter_dash = alt.Chart(dash_scatter_sample).mark_circle(size=65).encode(
                 x=alt.X("amount:Q", title="Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
