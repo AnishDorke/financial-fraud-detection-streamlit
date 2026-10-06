@@ -137,25 +137,20 @@ if "auto_running" not in st.session_state:
     st.session_state["auto_running"] = False
 if "auto_stage_index" not in st.session_state:
     st.session_state["auto_stage_index"] = 0
-if "active_stage" not in st.session_state:
-    st.session_state["active_stage"] = STAGES[0]
 
-# --- BULLETPROOF ROUTER SYNC ---
+# --- CRITICAL FIX: PRE-WIDGET ROUTER SYNC ---
+# We check if a programmatic jump is queued BEFORE rendering the radio widget
+if "next_nav_target" in st.session_state:
+    st.session_state["sidebar_radio"] = st.session_state.pop("next_nav_target")
+elif "sidebar_radio" not in st.session_state:
+    st.session_state["sidebar_radio"] = STAGES[0]
+
 st.sidebar.title("Fraud Detection System")
 
-def on_nav_change():
-    st.session_state["active_stage"] = st.session_state["sidebar_radio"]
-    # If user clicks manually in sidebar, stop automated progression
-    st.session_state["auto_running"] = False
-
-current_index = STAGES.index(st.session_state["active_stage"]) if st.session_state["active_stage"] in STAGES else 0
-
-sidebar_choice = st.sidebar.radio(
+current_nav = st.sidebar.radio(
     "Navigation Menu:",
     STAGES,
-    index=current_index,
-    key="sidebar_radio",
-    on_change=on_nav_change
+    key="sidebar_radio"
 )
 
 st.sidebar.markdown("---")
@@ -168,7 +163,7 @@ is_auto = auto_mode or st.session_state["auto_running"]
 
 def advance_pipeline(next_stage_name: str, stage_idx: int):
     st.session_state["auto_stage_index"] = stage_idx
-    st.session_state["active_stage"] = next_stage_name
+    st.session_state["next_nav_target"] = next_stage_name
     if next_stage_name == "Dashboard":
         st.session_state["auto_running"] = False
     st.rerun()
@@ -176,10 +171,10 @@ def advance_pipeline(next_stage_name: str, stage_idx: int):
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7, slot=None):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         target = slot if slot is not None else st
-        pbar = target.progress(0.0, text=f"Automatic Pipeline: Stage in progress ({seconds}s remaining)...")
+        pbar = target.progress(0.0, text=f"Automatic Pipeline Active: Processing calculations ({seconds}s remaining)...")
         for s in range(seconds, 0, -1):
             fraction = (seconds - s + 1) / float(seconds)
-            pbar.progress(fraction, text=f"Automatic Pipeline: Advancing to next stage in {s}s...")
+            pbar.progress(fraction, text=f"Automatic Pipeline Active: Advancing to {next_stage_name.split(':')[0]} in {s}s...")
             time.sleep(1.0)
         pbar.empty()
         advance_pipeline(next_stage_name, current_stage_idx + 1)
@@ -508,8 +503,9 @@ def render_stage_5():
                     test_len = len(st.session_state["test_df"])
                     train_fraud = int(st.session_state["train_df"]["isFraud"].sum())
                     test_fraud = int(st.session_state["test_df"]["isFraud"].sum())
-                    st.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
-                    st.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
+                    c1, c2 = st.columns(2)
+                    c1.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
+                    c2.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
 
     handle_auto_progression(4, "Stage 6: Model Training and Evaluation", seconds=7, slot=prog_slot)
 
@@ -776,7 +772,7 @@ def render_dashboard():
         st.table(comp_df)
 
 # =============================================================
-# SINGLE-DISPATCH ROUTER: EXECUTES EXACTLY ONE STAGE PER RUN
+# SINGLE-DISPATCH ROUTER
 # =============================================================
 STAGE_ROUTER = {
     "Stage 1: Continuous Data Ingestion": render_stage_1,
@@ -789,5 +785,5 @@ STAGE_ROUTER = {
     "Dashboard": render_dashboard,
 }
 
-# Clear any previous residual UI and execute only the target stage function
-STAGE_ROUTER[st.session_state["active_stage"]]()
+# Execute strictly the function corresponding to the active radio navigation state
+STAGE_ROUTER[current_nav]()
