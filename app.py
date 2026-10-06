@@ -261,7 +261,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
     st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
 
 # -------------------------------------------------------------
-# STAGE 2: CLEANING & VALIDATION (7s progression)
+# STAGE 2: CLEANING & VALIDATION (Table hidden during auto mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 2: Cleaning and Data Validation":
     st.title("Stage 2: Data Cleaning and Integrity Audit")
@@ -292,20 +292,21 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     if st.session_state["auto_running"] and st.session_state["cleaned_df"] is None:
         st.session_state["cleaned_df"] = execute_cleaning()
 
-    if st.button("Run Data Cleaning and Sanitization"):
-        with st.spinner("Sanitizing active dataset..."):
-            st.session_state["cleaned_df"] = execute_cleaning()
-            st.success(f"Cleaning completed. Retained {len(st.session_state['cleaned_df']):,} valid records.")
+    if not st.session_state["auto_running"]:
+        if st.button("Run Data Cleaning and Sanitization"):
+            with st.spinner("Sanitizing active dataset..."):
+                st.session_state["cleaned_df"] = execute_cleaning()
+                st.success(f"Cleaning completed. Retained {len(st.session_state['cleaned_df']):,} valid records.")
 
-    display_df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else raw
-    status_label = "Cleaned Dataset" if st.session_state["cleaned_df"] is not None else "Raw Uncleaned Dataset"
-    st.subheader(f"{status_label} ({len(display_df):,} Records - Latest First)")
-    st.dataframe(display_df.iloc[::-1].head(1500), use_container_width=True, height=420)
+        display_df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else raw
+        status_label = "Cleaned Dataset" if st.session_state["cleaned_df"] is not None else "Raw Uncleaned Dataset"
+        st.subheader(f"{status_label} ({len(display_df):,} Records - Latest First)")
+        st.dataframe(display_df.iloc[::-1].head(1500), use_container_width=True, height=420)
 
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (7s progression)
+# STAGE 3: EXPLORATORY DATA ANALYSIS (Zero tables, charts only)
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
@@ -355,7 +356,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (100% Native Python Dictionary Transforms)
+# STAGE 4: FEATURE ENGINEERING
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -373,11 +374,9 @@ elif current_nav == "Stage 4: Feature Engineering":
         amounts = feat["amount"].astype(float).tolist()
         dest_list = feat["nameDest"].astype(str).tolist()
 
-        # 1. Historical Transaction Counts via standard Counter (zero sorting indexer bugs)
         counts = Counter(orig_list)
         feat["orig_hist_count"] = [counts[x] for x in orig_list]
 
-        # 2. Historical Mean Transaction Amount via defaultdict
         orig_sums = defaultdict(float)
         orig_counts = defaultdict(int)
         for name, amt in zip(orig_list, amounts):
@@ -386,7 +385,6 @@ elif current_nav == "Stage 4: Feature Engineering":
         orig_means = {k: round(orig_sums[k] / orig_counts[k], 2) for k in orig_counts}
         feat["orig_hist_mean_amount"] = [orig_means[x] for x in orig_list]
 
-        # 3. Maximum Destination Amount via defaultdict
         dest_max_map = defaultdict(float)
         for dest, amt in zip(dest_list, amounts):
             if amt > dest_max_map[dest]:
@@ -398,10 +396,11 @@ elif current_nav == "Stage 4: Feature Engineering":
     if st.session_state["auto_running"] and st.session_state["featured_df"] is None:
         st.session_state["featured_df"] = perform_feature_engineering()
 
-    if st.button("Generate Feature Transformations"):
-        with st.spinner("Extracting features..."):
-            st.session_state["featured_df"] = perform_feature_engineering()
-            st.success(f"Feature engineering completed across {st.session_state['featured_df'].shape[1]} dimensions.")
+    if not st.session_state["auto_running"]:
+        if st.button("Generate Feature Transformations"):
+            with st.spinner("Extracting features..."):
+                st.session_state["featured_df"] = perform_feature_engineering()
+                st.success(f"Feature engineering completed across {st.session_state['featured_df'].shape[1]} dimensions.")
 
     if st.session_state["featured_df"] is not None:
         feat_df = st.session_state["featured_df"]
@@ -422,7 +421,7 @@ elif current_nav == "Stage 4: Feature Engineering":
     handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 5: IMBALANCE HANDLING & SPLITTING (7s progression)
+# STAGE 5: IMBALANCE HANDLING & SPLITTING (Metrics only, zero extra tables)
 # -------------------------------------------------------------
 elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
@@ -443,11 +442,12 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
         split_c1, split_c2 = st.columns([1, 2])
         with split_c1:
             split_step = st.slider("Select Chronological Split Step:", min_value=1, max_value=max_step, value=default_split)
-            if st.button("Apply Partition"):
-                train_mask = df["step"] <= split_step
-                st.session_state["train_df"] = df[train_mask].reset_index(drop=True)
-                st.session_state["test_df"] = df[~train_mask].reset_index(drop=True)
-                st.success("Chronological split established.")
+            if not st.session_state["auto_running"]:
+                if st.button("Apply Partition"):
+                    train_mask = df["step"] <= split_step
+                    st.session_state["train_df"] = df[train_mask].reset_index(drop=True)
+                    st.session_state["test_df"] = df[~train_mask].reset_index(drop=True)
+                    st.success("Chronological split established.")
 
         with split_c2:
             if st.session_state["train_df"] is not None:
@@ -461,7 +461,7 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     handle_auto_progression(4, "Stage 6: Model Training and Evaluation", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 6: MODEL TRAINING & TELEMETRY (7s progression)
+# STAGE 6: MODEL TRAINING & TELEMETRY
 # -------------------------------------------------------------
 elif current_nav == "Stage 6: Model Training and Evaluation":
     st.title("Stage 6: Model Training and Evaluation")
@@ -503,10 +503,11 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
         if st.session_state["auto_running"] and st.session_state["trained_model"] is None:
             fit_active_model()
 
-        if st.button("Train LightGBM Model"):
-            with st.spinner("Fitting LightGBM classifier..."):
-                fit_active_model()
-                st.success("Model training and out-of-time evaluation completed.")
+        if not st.session_state["auto_running"]:
+            if st.button("Train LightGBM Model"):
+                with st.spinner("Fitting LightGBM classifier..."):
+                    fit_active_model()
+                    st.success("Model training and out-of-time evaluation completed.")
 
         if st.session_state["trained_model"] is not None:
             m1, m2 = st.columns(2)
@@ -525,7 +526,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE (7s progression)
+# STAGE 7: PREDICTION & DECISION QUEUE
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
