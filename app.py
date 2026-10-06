@@ -55,8 +55,18 @@ STAGES = [
     "Dashboard"
 ]
 
+# --- ROBUST PROGRAMMATIC NAVIGATION (SOLVES AUTO-PROGRESSION LOCK) ---
+if "pending_nav" in st.session_state:
+    st.session_state["nav_radio_key"] = st.session_state.pop("pending_nav")
+elif "nav_radio_key" not in st.session_state:
+    st.session_state["nav_radio_key"] = STAGES[0]
+
+def trigger_next_stage(next_stage_name: str, stage_idx: int):
+    st.session_state["auto_stage_index"] = stage_idx
+    st.session_state["pending_nav"] = next_stage_name
+    st.rerun()
+
 def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
-    # Use variable dynamic seed so every generation produces distinct values
     seed_val = int(time.time() * 1000) % 1000000
     rng = np.random.default_rng(seed_val)
     
@@ -92,7 +102,6 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
         "isFraud": is_fraud
     })
 
-    # Inject 15% to 28% contamination
     contam_pct = rng.uniform(0.15, 0.28)
     n_contam = int(n_rows * contam_pct)
     contam_idx = rng.choice(n_rows, size=n_contam, replace=False)
@@ -131,25 +140,15 @@ if "auto_running" not in st.session_state:
     st.session_state["auto_running"] = False
 if "auto_stage_index" not in st.session_state:
     st.session_state["auto_stage_index"] = 0
-if "target_nav" not in st.session_state:
-    st.session_state["target_nav"] = STAGES[0]
 
-# --- SIDEBAR NAVIGATION (1-CLICK SYNC) ---
+# --- SIDEBAR NAVIGATION ---
 st.sidebar.title("Fraud Detection System")
-
-def on_nav_change():
-    st.session_state["target_nav"] = st.session_state["nav_radio_key"]
-
-default_idx = STAGES.index(st.session_state["target_nav"]) if st.session_state["target_nav"] in STAGES else 0
 
 current_nav = st.sidebar.radio(
     "Navigation Menu:",
     STAGES,
-    index=default_idx,
-    key="nav_radio_key",
-    on_change=on_nav_change
+    key="nav_radio_key"
 )
-st.session_state["target_nav"] = current_nav
 
 st.sidebar.markdown("---")
 auto_mode = st.sidebar.toggle("Automatic Pipeline Mode", value=st.session_state["auto_running"])
@@ -157,24 +156,19 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-def trigger_next_stage(next_stage_name: str, stage_idx: int):
-    st.session_state["auto_stage_index"] = stage_idx
-    st.session_state["target_nav"] = next_stage_name
-    st.rerun()
-
-def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 8):
+# 7-second countdown controller starting from Stage 2
+def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
         pbar = st.progress(0.0)
         for s in range(seconds, 0, -1):
-            status_box.info(f"Automatic Mode: Executing calculations. Advancing to next stage in {s} seconds...")
+            status_box.info(f"Automatic Mode: Executing stage calculations. Advancing to next stage in {s} seconds...")
             pbar.progress((seconds - s + 1) / float(seconds))
             time.sleep(1.0)
         status_box.empty()
         pbar.empty()
         trigger_next_stage(next_stage_name, current_stage_idx + 1)
 
-# Helper to invalidate all downstream pipeline states upon ingestion change
 def reset_downstream_stages():
     st.session_state["cleaned_df"] = None
     st.session_state["featured_df"] = None
@@ -185,11 +179,11 @@ def reset_downstream_stages():
     st.session_state["pipeline_complete"] = False
 
 # -------------------------------------------------------------
-# STAGE 1: INGESTION (Reset to 50k, Overflow Protection, Latest First)
+# STAGE 1: INGESTION
 # -------------------------------------------------------------
 if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
-    st.markdown("Preloaded with 50,000 historical transactions. Choose whether to append or start fresh from scratch, or reset to the baseline dataset.")
+    st.markdown("Preloaded with 50,000 baseline historical transactions. Select whether to append new records or start fresh from scratch. When Automatic Pipeline Mode is enabled, clicking the ingestion button automatically triggers the 7-second sequential pipeline starting from Stage 2.")
 
     col_rst1, col_rst2 = st.columns([3, 1])
     with col_rst2:
@@ -224,13 +218,12 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 new_data = generate_unclean_dataset(int(target_records))
                 if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
                     combined = pd.concat([st.session_state["raw_df"], new_data], ignore_index=True)
-                    # Overflow protection: retain up to MAX_INGEST_LIMIT most recent
                     if len(combined) > MAX_INGEST_LIMIT:
                         st.session_state["raw_df"] = combined.iloc[-MAX_INGEST_LIMIT:].reset_index(drop=True)
-                        st.warning(f"Memory safety: Dataset reached volume limit. Retained the most recent {MAX_INGEST_LIMIT:,} records.")
+                        st.warning(f"Memory safety: Retained the most recent {MAX_INGEST_LIMIT:,} records.")
                     else:
                         st.session_state["raw_df"] = combined
-                        st.success(f"Appended {len(new_data):,} records. Active dataset now contains {len(st.session_state['raw_df']):,} records.")
+                        st.success(f"Appended {len(new_data):,} records. Active dataset: {len(st.session_state['raw_df']):,} records.")
                 else:
                     st.session_state["raw_df"] = new_data
                     st.success(f"Initialized fresh dataset with {len(st.session_state['raw_df']):,} records.")
@@ -249,10 +242,9 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 combined = pd.concat([st.session_state["raw_df"], uploaded_df], ignore_index=True)
                 if len(combined) > MAX_INGEST_LIMIT:
                     st.session_state["raw_df"] = combined.iloc[-MAX_INGEST_LIMIT:].reset_index(drop=True)
-                    st.warning(f"Memory safety: Retained the most recent {MAX_INGEST_LIMIT:,} records.")
                 else:
                     st.session_state["raw_df"] = combined
-                    st.success(f"Appended {len(uploaded_df):,} uploaded records. Active total: {len(st.session_state['raw_df']):,}.")
+                st.success(f"Appended {len(uploaded_df):,} records. Active total: {len(st.session_state['raw_df']):,}.")
             else:
                 st.session_state["raw_df"] = uploaded_df
                 st.success(f"Initialized fresh dataset from upload with {len(uploaded_df):,} records.")
@@ -264,11 +256,10 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
     st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records - Latest First)")
-    # Present latest records at the top so newly ingested rows are immediately visible
     st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
 
 # -------------------------------------------------------------
-# STAGE 2: CLEANING & VALIDATION (8s progression)
+# STAGE 2: CLEANING & VALIDATION (7s progression)
 # -------------------------------------------------------------
 elif current_nav == "Stage 2: Cleaning and Data Validation":
     st.title("Stage 2: Data Cleaning and Integrity Audit")
@@ -309,17 +300,16 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     st.subheader(f"{status_label} ({len(display_df):,} Records - Latest First)")
     st.dataframe(display_df.iloc[::-1].head(1500), use_container_width=True, height=420)
 
-    handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=8)
+    handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS (Fully Reactive to New Data)
+# STAGE 3: EXPLORATORY DATA ANALYSIS (7s progression)
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
     st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
-    # Dynamic sample of the most recent data reflecting new ingestions
     chart_sample = df.tail(min(len(df), 25000))
 
     eda_c1, eda_c2 = st.columns(2)
@@ -352,10 +342,10 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     ).properties(height=240).interactive()
     st.altair_chart(line_step, use_container_width=True)
 
-    handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=8)
+    handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (Latest First Tables)
+# STAGE 4: FEATURE ENGINEERING (7s progression)
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -397,10 +387,10 @@ elif current_nav == "Stage 4: Feature Engineering":
     else:
         st.info("Click 'Generate Feature Transformations' above to compute feature tables.")
 
-    handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=8)
+    handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 5: IMBALANCE HANDLING & SPLITTING (8s progression)
+# STAGE 5: IMBALANCE HANDLING & SPLITTING (7s progression)
 # -------------------------------------------------------------
 elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
@@ -436,10 +426,10 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
                 st.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
                 st.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
 
-    handle_auto_progression(4, "Stage 6: Model Training and Evaluation", seconds=8)
+    handle_auto_progression(4, "Stage 6: Model Training and Evaluation", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 6: MODEL TRAINING & TELEMETRY (8s progression)
+# STAGE 6: MODEL TRAINING & TELEMETRY (7s progression)
 # -------------------------------------------------------------
 elif current_nav == "Stage 6: Model Training and Evaluation":
     st.title("Stage 6: Model Training and Evaluation")
@@ -500,10 +490,10 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
             ).properties(height=280, title="Precision-Recall Trajectory").interactive()
             st.altair_chart(pr_chart, use_container_width=True)
 
-    handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=8)
+    handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE (8s progression)
+# STAGE 7: PREDICTION & DECISION QUEUE (7s progression)
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
@@ -549,7 +539,6 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.caption("Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
 
     selection = alt.selection_point(fields=["audit_action"], bind="legend")
-    # Take sample from the latest records
     scatter_sample = scoring_batch.tail(min(len(scoring_batch), 4000))
 
     scatter_chart = alt.Chart(scatter_sample).mark_circle(size=70).encode(
@@ -569,9 +558,9 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     if st.session_state["auto_running"]:
         status_box = st.empty()
         pbar = st.progress(0.0)
-        for s in range(8, 0, -1):
+        for s in range(7, 0, -1):
             status_box.info(f"Automatic Mode: Finalizing batch inference across {len(scoring_batch):,} transactions. Moving to Dashboard in {s} seconds...")
-            pbar.progress((8 - s + 1) / 8.0)
+            pbar.progress((7 - s + 1) / 7.0)
             time.sleep(1.0)
         status_box.empty()
         pbar.empty()
@@ -579,7 +568,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
         trigger_next_stage("Dashboard", 7)
 
 # -------------------------------------------------------------
-# DASHBOARD
+# DASHBOARD (Stops Automation Here)
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
