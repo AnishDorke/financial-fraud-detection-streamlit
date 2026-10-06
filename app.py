@@ -5,6 +5,7 @@ import altair as alt
 from pathlib import Path
 from PIL import Image
 from sklearn.metrics import precision_recall_curve, auc, roc_auc_score
+from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 import time
 from collections import Counter, defaultdict
@@ -25,6 +26,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Solar theme styling with zero emojis
 st.markdown("""
 <style>
     .metric-card {
@@ -82,8 +84,8 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     old_dest = np.round(rng.exponential(scale=base_scale * 0.7, size=n_rows), 2)
     new_dest = old_dest + amounts
 
-    fraud_rate = rng.uniform(0.03, 0.075)
-    fraud_count = max(8, int(n_rows * fraud_rate))
+    fraud_rate = rng.uniform(0.035, 0.08)
+    fraud_count = max(12, int(n_rows * fraud_rate))
     is_fraud = np.zeros(n_rows, dtype=int)
     fraud_idx = rng.choice(n_rows, size=fraud_count, replace=False)
     
@@ -146,6 +148,7 @@ if "auto_running" not in st.session_state:
 if "auto_stage_index" not in st.session_state:
     st.session_state["auto_stage_index"] = 0
 
+# --- SIDEBAR NAVIGATION ---
 st.sidebar.title("Fraud Detection System")
 
 current_nav = st.sidebar.radio(
@@ -160,6 +163,7 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
+# 7-second countdown progression controller
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
@@ -182,7 +186,7 @@ def reset_downstream_stages():
     st.session_state["pipeline_complete"] = False
 
 # -------------------------------------------------------------
-# STAGE 1: INGESTION
+# STAGE 1: INGESTION (Tables suppressed in automatic mode)
 # -------------------------------------------------------------
 if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
@@ -258,11 +262,13 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 st.session_state["auto_running"] = True
                 trigger_next_stage("Stage 2: Cleaning and Data Validation", 1)
 
-    st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records - Latest First)")
-    st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
+    # Render table only when not running automated pipeline
+    if not st.session_state["auto_running"]:
+        st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records - Latest First)")
+        st.dataframe(st.session_state["raw_df"].iloc[::-1].head(1500), use_container_width=True, height=420)
 
 # -------------------------------------------------------------
-# STAGE 2: CLEANING & VALIDATION
+# STAGE 2: CLEANING & VALIDATION (Table hidden in automatic mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 2: Cleaning and Data Validation":
     st.title("Stage 2: Data Cleaning and Integrity Audit")
@@ -307,7 +313,7 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 3: EXPLORATORY DATA ANALYSIS
+# STAGE 3: EXPLORATORY DATA ANALYSIS (Charts only, zero tables)
 # -------------------------------------------------------------
 elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.title("Stage 3: Exploratory Data Analysis")
@@ -370,7 +376,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING
+# STAGE 4: FEATURE ENGINEERING (Tables hidden in automatic mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -416,26 +422,26 @@ elif current_nav == "Stage 4: Feature Engineering":
                 st.session_state["featured_df"] = perform_feature_engineering()
                 st.success(f"Feature engineering completed across {st.session_state['featured_df'].shape[1]} dimensions.")
 
-    if st.session_state["featured_df"] is not None:
-        feat_df = st.session_state["featured_df"]
+        if st.session_state["featured_df"] is not None:
+            feat_df = st.session_state["featured_df"]
 
-        st.subheader("Base Signals (Latest First)")
-        base_cols = ["step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig", "nameDest", "oldbalanceDest", "newbalanceDest", "isFraud"]
-        st.dataframe(feat_df[base_cols].iloc[::-1].head(1500), use_container_width=True, height=280)
+            st.subheader("Base Signals (Latest First)")
+            base_cols = ["step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig", "nameDest", "oldbalanceDest", "newbalanceDest", "isFraud"]
+            st.dataframe(feat_df[base_cols].iloc[::-1].head(1500), use_container_width=True, height=280)
 
-        st.subheader("Engineered Features (Latest First)")
-        eng_cols = ["step", "nameOrig", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
-        st.dataframe(feat_df[eng_cols].iloc[::-1].head(1500), use_container_width=True, height=280)
+            st.subheader("Engineered Features (Latest First)")
+            eng_cols = ["step", "nameOrig", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
+            st.dataframe(feat_df[eng_cols].iloc[::-1].head(1500), use_container_width=True, height=280)
 
-        st.subheader("Feature Variance Analysis")
-        st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]].describe(), use_container_width=True)
+            st.subheader("Feature Variance Analysis")
+            st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]].describe(), use_container_width=True)
     else:
-        st.info("Click 'Generate Feature Transformations' above to compute feature tables.")
+        st.info("Feature transformations extracted and prepared for training pipeline.")
 
     handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 5: IMBALANCE HANDLING & SPLITTING
+# STAGE 5: IMBALANCE HANDLING & SPLITTING (Metrics only)
 # -------------------------------------------------------------
 elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
@@ -446,25 +452,39 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     else:
         df = st.session_state["featured_df"]
         max_step = int(df["step"].max())
-        default_split = max(1, int(max_step * 0.75))
+        min_step = int(df["step"].min())
 
-        if st.session_state["auto_running"] and st.session_state["train_df"] is None:
-            train_mask = df["step"] <= default_split
-            st.session_state["train_df"] = df[train_mask].reset_index(drop=True)
-            st.session_state["test_df"] = df[~train_mask].reset_index(drop=True)
+        calculated_split = int(df["step"].quantile(0.75))
+        if calculated_split >= max_step:
+            calculated_split = max(min_step, max_step - 1)
+
+        def apply_partition(chosen_step: int):
+            train_mask = df["step"] <= chosen_step
+            tr = df[train_mask].reset_index(drop=True)
+            te = df[~train_mask].reset_index(drop=True)
+            
+            if len(te) == 0 or len(tr) == 0:
+                tr, te = train_test_split(df, test_size=0.25, random_state=42, stratify=df["isFraud"] if df["isFraud"].nunique() > 1 else None)
+                tr = tr.reset_index(drop=True)
+                te = te.reset_index(drop=True)
+                
+            st.session_state["train_df"] = tr
+            st.session_state["test_df"] = te
+
+        if st.session_state["auto_running"] and (st.session_state["train_df"] is None or st.session_state["test_df"] is None or len(st.session_state["test_df"]) == 0):
+            apply_partition(calculated_split)
 
         split_c1, split_c2 = st.columns([1, 2])
         with split_c1:
-            split_step = st.slider("Select Chronological Split Step:", min_value=1, max_value=max_step, value=default_split)
+            step_slider_max = max(min_step + 1, max_step)
+            split_step = st.slider("Select Chronological Split Step:", min_value=min_step, max_value=step_slider_max, value=min(calculated_split, step_slider_max - 1))
             if not st.session_state["auto_running"]:
                 if st.button("Apply Partition"):
-                    train_mask = df["step"] <= split_step
-                    st.session_state["train_df"] = df[train_mask].reset_index(drop=True)
-                    st.session_state["test_df"] = df[~train_mask].reset_index(drop=True)
+                    apply_partition(split_step)
                     st.success("Chronological split established.")
 
         with split_c2:
-            if st.session_state["train_df"] is not None:
+            if st.session_state["train_df"] is not None and st.session_state["test_df"] is not None:
                 train_len = len(st.session_state["train_df"])
                 test_len = len(st.session_state["test_df"])
                 train_fraud = int(st.session_state["train_df"]["isFraud"].sum())
@@ -481,7 +501,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
     st.title("Stage 6: Model Training and Evaluation")
     st.markdown("Train LightGBM on the active training partition and evaluate precision-recall curves.")
 
-    if st.session_state["train_df"] is None:
+    if st.session_state["train_df"] is None or st.session_state["test_df"] is None or len(st.session_state["test_df"]) == 0:
         st.warning("Please configure the train/test split in Stage 5 first.")
     else:
         train_df = st.session_state["train_df"]
@@ -491,11 +511,19 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
             feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                             "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
 
-            train_sub = train_df.sample(n=min(len(train_df), 40000), random_state=42) if len(train_df) > 40000 else train_df
-            test_sub = test_df.sample(n=min(len(test_df), 15000), random_state=42) if len(test_df) > 15000 else test_df
+            t_df = train_df
+            e_df = test_df
+            if len(e_df) == 0:
+                t_df, e_df = train_test_split(t_df, test_size=0.25, random_state=42)
 
-            X_train, y_train = train_sub[feature_cols], train_sub["isFraud"]
-            X_test, y_test = test_sub[feature_cols], test_sub["isFraud"]
+            train_sub = t_df.sample(n=min(len(t_df), 40000), random_state=42) if len(t_df) > 40000 else t_df
+            test_sub = e_df.sample(n=min(len(e_df), 15000), random_state=42) if len(e_df) > 15000 else e_df
+
+            X_train = train_sub[feature_cols].copy().reset_index(drop=True)
+            y_train = train_sub["isFraud"].copy().reset_index(drop=True)
+            X_test = test_sub[feature_cols].copy().reset_index(drop=True)
+            y_test = test_sub["isFraud"].copy().reset_index(drop=True)
+
             scale_pos = (len(y_train) - y_train.sum()) / max(1, y_train.sum())
 
             clf = lgb.LGBMClassifier(
@@ -506,6 +534,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
                 verbose=-1
             )
             clf.fit(X_train, y_train)
+            
             preds = clf.predict_proba(X_test)[:, 1]
             precision, recall, _ = precision_recall_curve(y_test, preds)
             st.session_state["trained_model"] = clf
@@ -540,7 +569,7 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE
+# STAGE 7: PREDICTION & DECISION QUEUE (Triage cutoffs ensure populated Review tier)
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
@@ -551,9 +580,9 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     if st.session_state["trained_model"] is not None and "balance_orig_diff" in scoring_batch:
         feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                         "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
-        scores = st.session_state["trained_model"].predict_proba(scoring_batch[feature_cols])[:, 1]
+        raw_scores = st.session_state["trained_model"].predict_proba(scoring_batch[feature_cols])[:, 1]
     else:
-        scores = []
+        raw_scores = []
         for _, row in scoring_batch.iterrows():
             sc = 0.08
             if row.get("type", "") in ["TRANSFER", "CASH_OUT"]:
@@ -561,15 +590,25 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
                     sc += 0.55
                 if row.get("amount", 0) > 100000:
                     sc += 0.22
-            scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.05, 0.05))))
+            raw_scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.05, 0.05))))
 
-    scoring_batch["fraud_score"] = np.round(scores, 4)
-    # Calibrated triage boundaries ensuring Review is populated
+    scoring_batch["fraud_score"] = np.round(raw_scores, 4)
+
+    # Dynamic quantile thresholding guarantees a populated Review tier:
+    # Top 4% -> Block (Red), Next 8% -> Review (Yellow), Remaining 88% -> Approve (Blue)
+    block_thresh = float(scoring_batch["fraud_score"].quantile(0.96))
+    review_thresh = float(scoring_batch["fraud_score"].quantile(0.88))
+    if block_thresh <= review_thresh:
+        review_thresh = max(0.05, block_thresh * 0.5)
+
     scoring_batch["audit_action"] = pd.cut(
         scoring_batch["fraud_score"],
-        bins=[-0.1, 0.25, 0.65, 1.0],
+        bins=[-0.1, review_thresh, block_thresh, 1.0],
         labels=["Approve", "Review", "Block"]
     )
+    # Fallback to prevent any NaN categories
+    scoring_batch["audit_action"] = scoring_batch["audit_action"].fillna("Approve")
+
     st.session_state["scored_batch"] = scoring_batch
     st.session_state["pipeline_complete"] = True
 
@@ -616,7 +655,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
         trigger_next_stage("Dashboard", 7)
 
 # -------------------------------------------------------------
-# DASHBOARD (Fixed Donut Segment Display & Multi-form Visuals)
+# DASHBOARD (Fixed Donut Visual with guaranteed Review rendering)
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
@@ -640,11 +679,11 @@ elif current_nav == "Dashboard":
 
         st.markdown("---")
 
-        # Stable, explicit breakdown dataframe ensuring all categories are present
+        # Stable dataframe with non-zero slices for Block, Review, and Approve
         triage_df = pd.DataFrame([
-            {"audit_action": "Block", "count": n_block, "color": "#E05656"},
-            {"audit_action": "Review", "count": n_review, "color": "#F2C94C"},
-            {"audit_action": "Approve", "count": n_approve, "color": "#2F80ED"}
+            {"audit_action": "Block", "count": n_block},
+            {"audit_action": "Review", "count": n_review},
+            {"audit_action": "Approve", "count": n_approve}
         ])
 
         v_col1, v_col2 = st.columns(2)
@@ -664,7 +703,6 @@ elif current_nav == "Dashboard":
 
         with v_col2:
             st.subheader("Operational Volume by Action Tier")
-            bar_select = alt.selection_point(fields=["audit_action"])
             chart_bar = alt.Chart(triage_df).mark_bar().encode(
                 x=alt.X("audit_action:N", title="Action Category", axis=alt.Axis(labelAngle=0), sort=ACTION_DOMAIN),
                 y=alt.Y("count:Q", title="Transaction Volume"),
@@ -678,15 +716,14 @@ elif current_nav == "Dashboard":
         v_col3, v_col4 = st.columns(2)
         with v_col3:
             st.subheader("Triage Composition")
-            # Clean, non-collapsing interactive donut chart displaying Block, Review, and Approve reliably
+            # Donut chart reliably shows Block (Red), Review (Yellow), and Approve (Blue)
             donut_chart = alt.Chart(triage_df).mark_arc(innerRadius=70, stroke="#1E222B", strokeWidth=2).encode(
-                theta=alt.Theta("count:Q", title="Volume"),
+                theta=alt.Theta("count:Q", title="Volume", stack=True),
                 color=alt.Color(
                     "audit_action:N",
                     scale=alt.Scale(domain=ACTION_DOMAIN, range=ACTION_COLORS),
                     legend=alt.Legend(title="Triage Tier")
                 ),
-                order=alt.Order("count:Q", sort="descending"),
                 tooltip=["audit_action", "count"]
             ).properties(height=320).interactive()
             st.altair_chart(donut_chart, use_container_width=True)
