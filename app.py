@@ -43,7 +43,8 @@ st.markdown("""
 ACTION_COLORS = ["#E05656", "#F2C94C", "#2F80ED"]
 ACTION_DOMAIN = ["Block", "Review", "Approve"]
 
-def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
+# High-throughput vectorized generator (optimized for 500k to 1M rows)
+def generate_unclean_dataset(n_rows: int = 500000) -> pd.DataFrame:
     np.random.seed(int(pd.Timestamp.now().timestamp()) % 100000)
     steps = np.sort(np.random.randint(1, 35, size=n_rows))
     types = np.random.choice(["PAYMENT", "TRANSFER", "CASH_OUT", "DEBIT", "CASH_IN"], size=n_rows, p=[0.35, 0.12, 0.33, 0.05, 0.15])
@@ -94,9 +95,9 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
     dupe_rows = df.sample(n=max(5, int(n_rows * 0.02)), replace=True)
     return pd.concat([df, dupe_rows], ignore_index=True)
 
-# State initialization
+# State initialization with 500,000 historical records
 if "raw_df" not in st.session_state:
-    st.session_state["raw_df"] = generate_unclean_dataset(50000)
+    st.session_state["raw_df"] = generate_unclean_dataset(500000)
 if "cleaned_df" not in st.session_state:
     st.session_state["cleaned_df"] = None
 if "featured_df" not in st.session_state:
@@ -130,7 +131,7 @@ STAGES = [
 if "nav_selection" not in st.session_state:
     st.session_state["nav_selection"] = STAGES[0]
 
-# --- SIDEBAR NAVIGATION (FIXED 1-CLICK RESPONSIVENESS) ---
+# --- SIDEBAR NAVIGATION (1-CLICK RESPONSIVENESS) ---
 st.sidebar.title("Fraud Detection System")
 
 current_nav = st.sidebar.radio(
@@ -147,7 +148,6 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-# 8-second countdown timer function from Stage 2 onward
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 8):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
@@ -163,38 +163,70 @@ def handle_auto_progression(current_stage_idx: int, next_stage_name: str, second
         st.rerun()
 
 # -------------------------------------------------------------
-# STAGE 1: INGESTION (Starts with 50,000 historical records)
+# STAGE 1: INGESTION (500k Preloaded, Append vs Scratch, Range 100 to 1M)
 # -------------------------------------------------------------
 if current_nav == "Stage 1: Continuous Data Ingestion":
     st.title("Stage 1: Continuous Data Ingestion")
-    st.markdown("Configure record volume or upload your custom CSV feed. When Automatic Pipeline Mode is enabled, the pipeline executes automatically across your selected volume.")
+    st.markdown("Preloaded with 500,000 baseline historical transactions. Select whether to append new transactions or start fresh from scratch, choosing between slider increments of 500 or typing any whole number from 100 to 1,000,000.")
 
-    ctrl_col1, ctrl_col2 = st.columns([1, 1])
-    with ctrl_col1:
-        record_count = st.slider("Select Record Ingestion Volume:", min_value=5000, max_value=100000, value=len(st.session_state["raw_df"]), step=5000)
-        button_label = "Ingest & Begin Automated Pipeline" if auto_mode else "Ingest New Transaction Batch"
-        if st.button(button_label, use_container_width=True):
-            st.session_state["raw_df"] = generate_unclean_dataset(record_count)
-            st.session_state["cleaned_df"] = None
-            st.session_state["featured_df"] = None
-            st.session_state["train_df"] = None
-            st.session_state["test_df"] = None
-            st.session_state["trained_model"] = None
-            st.session_state["scored_batch"] = None
-            st.session_state["pipeline_complete"] = False
+    st.subheader("Data Configuration and Ingestion Controls")
+    
+    ingest_mode = st.radio(
+        "Ingestion Strategy:",
+        ["Append to Active Dataset", "Start from Scratch (New Dataset)"],
+        horizontal=True
+    )
 
-            if auto_mode:
-                st.session_state["auto_running"] = True
-                st.session_state["auto_stage_index"] = 1
-                st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
-                st.rerun()
-            else:
-                st.success(f"Ingested {len(st.session_state['raw_df']):,} records containing realistic data anomalies.")
+    input_method = st.radio(
+        "Record Selection Method:",
+        ["Scroll (Slider in steps of 500)", "Type Exact Whole Number (100 to 1,000,000)"],
+        horizontal=True
+    )
 
-    with ctrl_col2:
+    if input_method == "Scroll (Slider in steps of 500)":
+        target_records = st.slider("Select Record Count:", min_value=500, max_value=1000000, value=50000, step=500)
+    else:
+        target_records = st.number_input("Enter Exact Number of Records (>100):", min_value=100, max_value=1000000, value=50000, step=1)
+
+    c_btn1, c_btn2 = st.columns([1, 1])
+    with c_btn1:
+        btn_label = "Generate & Ingest Dataset" if not auto_mode else "Ingest & Begin Automated Pipeline"
+        if st.button(btn_label, use_container_width=True):
+            with st.spinner("Generating transaction batch..."):
+                new_data = generate_unclean_dataset(int(target_records))
+                if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
+                    st.session_state["raw_df"] = pd.concat([st.session_state["raw_df"], new_data], ignore_index=True)
+                    st.success(f"Appended {len(new_data):,} records. Active dataset now contains {len(st.session_state['raw_df']):,} records.")
+                else:
+                    st.session_state["raw_df"] = new_data
+                    st.success(f"Initialized fresh dataset with {len(st.session_state['raw_df']):,} records.")
+
+                # Invalidate downstream stages
+                st.session_state["cleaned_df"] = None
+                st.session_state["featured_df"] = None
+                st.session_state["train_df"] = None
+                st.session_state["test_df"] = None
+                st.session_state["trained_model"] = None
+                st.session_state["scored_batch"] = None
+                st.session_state["pipeline_complete"] = False
+
+                if auto_mode:
+                    st.session_state["auto_running"] = True
+                    st.session_state["auto_stage_index"] = 1
+                    st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
+                    st.rerun()
+
+    with c_btn2:
         uploaded_csv = st.file_uploader("Or Upload Custom CSV Batch", type=["csv"])
         if uploaded_csv is not None and st.button("Ingest Uploaded File", use_container_width=True):
-            st.session_state["raw_df"] = pd.read_csv(uploaded_csv)
+            uploaded_df = pd.read_csv(uploaded_csv)
+            if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
+                st.session_state["raw_df"] = pd.concat([st.session_state["raw_df"], uploaded_df], ignore_index=True)
+                st.success(f"Appended {len(uploaded_df):,} uploaded records. Active total: {len(st.session_state['raw_df']):,}.")
+            else:
+                st.session_state["raw_df"] = uploaded_df
+                st.success(f"Initialized fresh dataset from upload with {len(uploaded_df):,} records.")
+
             st.session_state["cleaned_df"] = None
             st.session_state["featured_df"] = None
             st.session_state["train_df"] = None
@@ -208,11 +240,9 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
                 st.session_state["auto_stage_index"] = 1
                 st.session_state["nav_selection"] = "Stage 2: Cleaning and Data Validation"
                 st.rerun()
-            else:
-                st.success(f"Uploaded and ingested {len(st.session_state['raw_df']):,} rows from external feed.")
 
-    st.subheader(f"Raw Transaction Feed ({len(st.session_state['raw_df']):,} Records)")
-    st.dataframe(st.session_state["raw_df"], use_container_width=True, height=420)
+    st.subheader(f"Active Raw Transaction Feed ({len(st.session_state['raw_df']):,} Total Records)")
+    st.dataframe(st.session_state["raw_df"].head(1000), use_container_width=True, height=420)
 
 # -------------------------------------------------------------
 # STAGE 2: CLEANING & VALIDATION (8s progression)
@@ -247,13 +277,14 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
         st.session_state["cleaned_df"] = execute_cleaning()
 
     if st.button("Run Data Cleaning and Sanitization"):
-        st.session_state["cleaned_df"] = execute_cleaning()
-        st.success(f"Cleaning completed. Retained {len(st.session_state['cleaned_df']):,} valid records.")
+        with st.spinner("Sanitizing active dataset..."):
+            st.session_state["cleaned_df"] = execute_cleaning()
+            st.success(f"Cleaning completed. Retained {len(st.session_state['cleaned_df']):,} valid records.")
 
     display_df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else raw
     status_label = "Cleaned Dataset" if st.session_state["cleaned_df"] is not None else "Raw Uncleaned Dataset"
     st.subheader(f"{status_label} ({len(display_df):,} Records)")
-    st.dataframe(display_df, use_container_width=True, height=420)
+    st.dataframe(display_df.head(1000), use_container_width=True, height=420)
 
     handle_auto_progression(1, "Stage 3: Exploratory Data Analysis", seconds=8)
 
@@ -265,8 +296,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
-    # Sample up to 10k rows for rapid, reactive Altair charting
-    chart_sample = df.sample(n=min(len(df), 10000), random_state=42) if len(df) > 10000 else df
+    chart_sample = df.sample(n=min(len(df), 15000), random_state=42) if len(df) > 15000 else df
 
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
@@ -330,11 +360,11 @@ elif current_nav == "Stage 4: Feature Engineering":
 
         st.subheader("Base Signals")
         base_cols = ["step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig", "nameDest", "oldbalanceDest", "newbalanceDest", "isFraud"]
-        st.dataframe(feat_df[base_cols], use_container_width=True, height=280)
+        st.dataframe(feat_df[base_cols].head(1000), use_container_width=True, height=280)
 
         st.subheader("Engineered Features")
         eng_cols = ["step", "nameOrig", "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "orig_hist_mean_amount", "dest_max_amount", "isFraud"]
-        st.dataframe(feat_df[eng_cols], use_container_width=True, height=280)
+        st.dataframe(feat_df[eng_cols].head(1000), use_container_width=True, height=280)
 
         st.subheader("Feature Variance Analysis")
         st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]].describe(), use_container_width=True)
@@ -398,8 +428,13 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
         def fit_active_model():
             feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
                             "balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]
-            X_train, y_train = train_df[feature_cols], train_df["isFraud"]
-            X_test, y_test = test_df[feature_cols], test_df["isFraud"]
+            
+            # Subsample training data to 50k rows max if dataset is massive to ensure fast training
+            train_sub = train_df.sample(n=min(len(train_df), 50000), random_state=42) if len(train_df) > 50000 else train_df
+            test_sub = test_df.sample(n=min(len(test_df), 20000), random_state=42) if len(test_df) > 20000 else test_df
+
+            X_train, y_train = train_sub[feature_cols], train_sub["isFraud"]
+            X_test, y_test = test_sub[feature_cols], test_sub["isFraud"]
             scale_pos = (len(y_train) - y_train.sum()) / max(1, y_train.sum())
 
             clf = lgb.LGBMClassifier(
@@ -467,7 +502,6 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
             scores.append(min(0.99, max(0.01, sc + np.random.uniform(-0.05, 0.05))))
 
     scoring_batch["fraud_score"] = np.round(scores, 4)
-    # Balanced triage threshold cuts
     scoring_batch["audit_action"] = pd.cut(
         scoring_batch["fraud_score"],
         bins=[-0.1, 0.25, 0.65, 1.0],
