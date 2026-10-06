@@ -163,16 +163,19 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-# Top-anchored progress controller
+is_auto = auto_mode or st.session_state["auto_running"]
+
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7, progress_slot=None):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         target = progress_slot if progress_slot is not None else st
         pbar = target.progress(0.0, text=f"Automatic Pipeline Active: Processing calculations ({seconds}s remaining)...")
         for s in range(seconds, 0, -1):
             fraction = (seconds - s + 1) / float(seconds)
-            pbar.progress(fraction, text=f"Automatic Pipeline Active: Executing stage calculations... Advancing in {s}s")
+            pbar.progress(fraction, text=f"Automatic Pipeline Active: Advancing to next stage in {s}s...")
             time.sleep(1.0)
         pbar.empty()
+        if next_stage_name == "Dashboard":
+            st.session_state["auto_running"] = False
         trigger_next_stage(next_stage_name, current_stage_idx + 1)
 
 def reset_downstream_stages():
@@ -183,9 +186,6 @@ def reset_downstream_stages():
     st.session_state["trained_model"] = None
     st.session_state["scored_batch"] = None
     st.session_state["pipeline_complete"] = False
-
-# Helper flag: checks if automated mode is engaged
-is_auto = auto_mode or st.session_state["auto_running"]
 
 # -------------------------------------------------------------
 # STAGE 1: INGESTION
@@ -380,7 +380,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING
+# STAGE 4: FEATURE ENGINEERING (No stray boxes/tables in auto mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -421,7 +421,15 @@ elif current_nav == "Stage 4: Feature Engineering":
     if st.session_state["auto_running"] and st.session_state["featured_df"] is None:
         st.session_state["featured_df"] = perform_feature_engineering()
 
-    if not is_auto:
+    # In automated mode: Display 3 clean metric cards only (no tables, no info box)
+    if is_auto:
+        f_cols = st.session_state["featured_df"].shape[1] if st.session_state["featured_df"] is not None else 16
+        n_rows = len(st.session_state["featured_df"]) if st.session_state["featured_df"] is not None else len(df)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Feature Dimensions", f"{f_cols} signals")
+        m2.metric("Computed Records", f"{n_rows:,} rows")
+        m3.metric("Behavioral State", "Leak-Free Ready")
+    else:
         if st.button("Generate Feature Transformations"):
             with st.spinner("Extracting features..."):
                 st.session_state["featured_df"] = perform_feature_engineering()
@@ -440,13 +448,11 @@ elif current_nav == "Stage 4: Feature Engineering":
 
             st.subheader("Feature Variance Analysis")
             st.dataframe(feat_df[["balance_orig_diff", "balance_dest_diff", "hour_of_day", "orig_hist_count", "dest_max_amount"]].describe(), use_container_width=True)
-    else:
-        st.info("Feature transformations calculated and prepared for model training.")
 
     handle_auto_progression(3, "Stage 5: Imbalance Handling and Splitting", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 5: IMBALANCE HANDLING & SPLITTING
+# STAGE 5: IMBALANCE HANDLING & SPLITTING (Slider hidden in auto mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 5: Imbalance Handling and Splitting":
     st.title("Stage 5: Imbalance Handling and Splitting")
@@ -480,28 +486,38 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
         if st.session_state["auto_running"] and (st.session_state["train_df"] is None or st.session_state["test_df"] is None or len(st.session_state["test_df"]) == 0):
             apply_partition(calculated_split)
 
-        split_c1, split_c2 = st.columns([1, 2])
-        with split_c1:
-            step_slider_max = max(min_step + 1, max_step)
-            split_step = st.slider("Select Chronological Split Step:", min_value=min_step, max_value=step_slider_max, value=min(calculated_split, step_slider_max - 1))
-            if not is_auto:
-                if st.button("Apply Partition"):
-                    apply_partition(split_step)
-                    st.success("Chronological split established.")
-
-        with split_c2:
+        if is_auto:
+            # Clean metrics cards only in automated mode
             if st.session_state["train_df"] is not None and st.session_state["test_df"] is not None:
                 train_len = len(st.session_state["train_df"])
                 test_len = len(st.session_state["test_df"])
                 train_fraud = int(st.session_state["train_df"]["isFraud"].sum())
                 test_fraud = int(st.session_state["test_df"]["isFraud"].sum())
-                st.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
-                st.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
+                c1, c2 = st.columns(2)
+                c1.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
+                c2.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
+        else:
+            split_c1, split_c2 = st.columns([1, 2])
+            with split_c1:
+                step_slider_max = max(min_step + 1, max_step)
+                split_step = st.slider("Select Chronological Split Step:", min_value=min_step, max_value=step_slider_max, value=min(calculated_split, step_slider_max - 1))
+                if st.button("Apply Partition"):
+                    apply_partition(split_step)
+                    st.success("Chronological split established.")
+
+            with split_c2:
+                if st.session_state["train_df"] is not None and st.session_state["test_df"] is not None:
+                    train_len = len(st.session_state["train_df"])
+                    test_len = len(st.session_state["test_df"])
+                    train_fraud = int(st.session_state["train_df"]["isFraud"].sum())
+                    test_fraud = int(st.session_state["test_df"]["isFraud"].sum())
+                    st.metric("Training Partition", f"{train_len:,} rows (Fraud: {train_fraud})")
+                    st.metric("Test Partition", f"{test_len:,} rows (Fraud: {test_fraud})")
 
     handle_auto_progression(4, "Stage 6: Model Training and Evaluation", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 6: MODEL TRAINING & TELEMETRY
+# STAGE 6: MODEL TRAINING & TELEMETRY (Line chart hidden in auto mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 6: Model Training and Evaluation":
     st.title("Stage 6: Model Training and Evaluation")
@@ -564,19 +580,21 @@ elif current_nav == "Stage 6: Model Training and Evaluation":
             m1.metric("Precision-Recall AUC (PR-AUC)", f"{st.session_state['pr_auc']:.4f}")
             m2.metric("ROC-AUC", f"{st.session_state['roc_auc']:.4f}")
 
-            precision, recall, _ = precision_recall_curve(st.session_state["eval_y"], st.session_state["eval_preds"])
-            pr_data = pd.DataFrame({"Recall": recall, "Precision": precision})
-            pr_chart = alt.Chart(pr_data).mark_line(color="#2F80ED", point=True).encode(
-                x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
-                y=alt.Y("Precision:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
-                tooltip=["Recall", "Precision"]
-            ).properties(height=280, title="Precision-Recall Trajectory").interactive()
-            st.altair_chart(pr_chart, use_container_width=True)
+            # Only render line chart in manual deep-dive mode
+            if not is_auto:
+                precision, recall, _ = precision_recall_curve(st.session_state["eval_y"], st.session_state["eval_preds"])
+                pr_data = pd.DataFrame({"Recall": recall, "Precision": precision})
+                pr_chart = alt.Chart(pr_data).mark_line(color="#2F80ED", point=True).encode(
+                    x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("Precision:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(labelAngle=0)),
+                    tooltip=["Recall", "Precision"]
+                ).properties(height=280, title="Precision-Recall Trajectory").interactive()
+                st.altair_chart(pr_chart, use_container_width=True)
 
     handle_auto_progression(5, "Stage 7: Operational Prediction and Flagging", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# STAGE 7: PREDICTION & DECISION QUEUE
+# STAGE 7: PREDICTION & DECISION QUEUE (Scatter hidden in auto mode)
 # -------------------------------------------------------------
 elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
@@ -639,7 +657,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     t2.metric("Review Tier (Manual Queue - Yellow)", f"{n_review:,} ({(n_review/N*100):.1f}%)")
     t3.metric("Block Tier (High Risk - Red)", f"{n_block:,} ({(n_block/N*100):.1f}%)")
 
-    # In automatic mode, suppress intermediate duplicate scatter plot to maintain focus on countdown
+    # In manual mode only: Display full scatter plot
     if not is_auto:
         st.markdown("---")
         st.subheader("Operational Risk Distribution")
@@ -662,7 +680,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     handle_auto_progression(6, "Dashboard", seconds=7, progress_slot=prog_slot)
 
 # -------------------------------------------------------------
-# DASHBOARD (Final Destination)
+# DASHBOARD (Final Stop: All Visuals Fully Rendered)
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
