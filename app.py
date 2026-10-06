@@ -7,6 +7,7 @@ from PIL import Image
 from sklearn.metrics import precision_recall_curve, auc, roc_auc_score
 import lightgbm as lgb
 import time
+from collections import Counter, defaultdict
 
 LOGO_PATH = Path("assets/logo.png")
 if LOGO_PATH.exists():
@@ -157,6 +158,7 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
+# 7-second countdown controller starting from Stage 2
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
@@ -315,7 +317,11 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
         st.subheader("Transaction Volume by Type and Target")
-        channel_summary = chart_sample.groupby(["type", "isFraud"]).size().reset_index(name="count")
+        channel_counts = Counter(zip(chart_sample["type"].astype(str), chart_sample["isFraud"].astype(int)))
+        channel_summary = pd.DataFrame([
+            {"type": k[0], "isFraud": k[1], "count": v}
+            for k, v in channel_counts.items()
+        ])
         chart_tx = alt.Chart(channel_summary).mark_bar().encode(
             x=alt.X("type:N", title="Transaction Channel", axis=alt.Axis(labelAngle=0)),
             y=alt.Y("count:Q", title="Volume"),
@@ -334,7 +340,11 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
         st.altair_chart(chart_box, use_container_width=True)
 
     st.subheader("Diurnal Velocity by Simulation Step")
-    step_summary = chart_sample.groupby("step").size().reset_index(name="throughput")
+    step_counts = Counter(chart_sample["step"].astype(int))
+    step_summary = pd.DataFrame([
+        {"step": k, "throughput": v}
+        for k, v in sorted(step_counts.items())
+    ])
     line_step = alt.Chart(step_summary).mark_line(color="#F2994A", point=True).encode(
         x=alt.X("step:Q", title="Simulation Step (Hour)", axis=alt.Axis(labelAngle=0)),
         y=alt.Y("throughput:Q", title="Transaction Throughput"),
@@ -345,7 +355,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (Bug-Free Fast Vectorized Implementation)
+# STAGE 4: FEATURE ENGINEERING (100% Native Python Dictionary Transforms)
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -359,19 +369,30 @@ elif current_nav == "Stage 4: Feature Engineering":
         feat["balance_dest_diff"] = feat["newbalanceDest"] - feat["oldbalanceDest"] - feat["amount"]
         feat["hour_of_day"] = feat["step"] % 24
         
-        # Robust fast mapping: completely avoids numpy.repeat broadcast bug in pandas groupby.cumcount()
-        # Group counts via value_counts mapping
-        name_counts = feat["nameOrig"].value_counts().to_dict()
-        feat["orig_hist_count"] = feat["nameOrig"].map(name_counts).fillna(1).astype(int)
-        
-        # Historical mean transaction amount per origin
-        name_means = feat.groupby("nameOrig", observed=False)["amount"].mean().to_dict()
-        feat["orig_hist_mean_amount"] = feat["nameOrig"].map(name_means).fillna(feat["amount"]).round(2)
-        
-        # Maximum received amount per destination
-        dest_maxes = feat.groupby("nameDest", observed=False)["amount"].max().to_dict()
-        feat["dest_max_amount"] = feat["nameDest"].map(dest_maxes).fillna(feat["amount"]).round(2)
-        
+        orig_list = feat["nameOrig"].astype(str).tolist()
+        amounts = feat["amount"].astype(float).tolist()
+        dest_list = feat["nameDest"].astype(str).tolist()
+
+        # 1. Historical Transaction Counts via standard Counter (zero sorting indexer bugs)
+        counts = Counter(orig_list)
+        feat["orig_hist_count"] = [counts[x] for x in orig_list]
+
+        # 2. Historical Mean Transaction Amount via defaultdict
+        orig_sums = defaultdict(float)
+        orig_counts = defaultdict(int)
+        for name, amt in zip(orig_list, amounts):
+            orig_sums[name] += amt
+            orig_counts[name] += 1
+        orig_means = {k: round(orig_sums[k] / orig_counts[k], 2) for k in orig_counts}
+        feat["orig_hist_mean_amount"] = [orig_means[x] for x in orig_list]
+
+        # 3. Maximum Destination Amount via defaultdict
+        dest_max_map = defaultdict(float)
+        for dest, amt in zip(dest_list, amounts):
+            if amt > dest_max_map[dest]:
+                dest_max_map[dest] = amt
+        feat["dest_max_amount"] = [dest_max_map[d] for d in dest_list]
+
         return feat.reset_index(drop=True)
 
     if st.session_state["auto_running"] and st.session_state["featured_df"] is None:
@@ -620,8 +641,11 @@ elif current_nav == "Dashboard":
 
         with v_col2:
             st.subheader("Operational Volume by Action Tier")
-            action_counts = scored["audit_action"].value_counts().reindex(ACTION_DOMAIN, fill_value=0).reset_index()
-            action_counts.columns = ["audit_action", "count"]
+            action_counts_map = Counter(scored["audit_action"].astype(str))
+            action_counts = pd.DataFrame({
+                "audit_action": ACTION_DOMAIN,
+                "count": [action_counts_map.get(action, 0) for action in ACTION_DOMAIN]
+            })
 
             bar_select = alt.selection_point(fields=["audit_action"])
             chart_bar = alt.Chart(action_counts).mark_bar().encode(
