@@ -55,7 +55,7 @@ STAGES = [
     "Dashboard"
 ]
 
-# --- ROBUST PROGRAMMATIC NAVIGATION (SOLVES AUTO-PROGRESSION LOCK) ---
+# --- ROBUST PROGRAMMATIC NAVIGATION ---
 if "pending_nav" in st.session_state:
     st.session_state["nav_radio_key"] = st.session_state.pop("pending_nav")
 elif "nav_radio_key" not in st.session_state:
@@ -117,7 +117,8 @@ def generate_unclean_dataset(n_rows: int = 50000) -> pd.DataFrame:
             df.loc[idx, "newbalanceOrig"] = -abs(df.loc[idx, "newbalanceOrig"])
 
     dupe_rows = df.sample(n=max(4, int(n_rows * 0.02)), replace=True)
-    return pd.concat([df, dupe_rows], ignore_index=True)
+    out_df = pd.concat([df, dupe_rows], ignore_index=True)
+    return out_df.reset_index(drop=True)
 
 # State initialization
 if "raw_df" not in st.session_state:
@@ -156,7 +157,6 @@ if not auto_mode:
     st.session_state["auto_running"] = False
     st.session_state["auto_stage_index"] = 0
 
-# 7-second countdown controller starting from Stage 2
 def handle_auto_progression(current_stage_idx: int, next_stage_name: str, seconds: int = 7):
     if st.session_state["auto_running"] and st.session_state["auto_stage_index"] == current_stage_idx:
         status_box = st.empty()
@@ -217,7 +217,7 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
             with st.spinner("Generating transaction batch..."):
                 new_data = generate_unclean_dataset(int(target_records))
                 if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
-                    combined = pd.concat([st.session_state["raw_df"], new_data], ignore_index=True)
+                    combined = pd.concat([st.session_state["raw_df"], new_data], ignore_index=True).reset_index(drop=True)
                     if len(combined) > MAX_INGEST_LIMIT:
                         st.session_state["raw_df"] = combined.iloc[-MAX_INGEST_LIMIT:].reset_index(drop=True)
                         st.warning(f"Memory safety: Retained the most recent {MAX_INGEST_LIMIT:,} records.")
@@ -237,9 +237,9 @@ if current_nav == "Stage 1: Continuous Data Ingestion":
     with c_btn2:
         uploaded_csv = st.file_uploader("Or Upload Custom CSV Batch", type=["csv"])
         if uploaded_csv is not None and st.button("Ingest Uploaded File", use_container_width=True):
-            uploaded_df = pd.read_csv(uploaded_csv)
+            uploaded_df = pd.read_csv(uploaded_csv).reset_index(drop=True)
             if ingest_mode == "Append to Active Dataset" and st.session_state["raw_df"] is not None:
-                combined = pd.concat([st.session_state["raw_df"], uploaded_df], ignore_index=True)
+                combined = pd.concat([st.session_state["raw_df"], uploaded_df], ignore_index=True).reset_index(drop=True)
                 if len(combined) > MAX_INGEST_LIMIT:
                     st.session_state["raw_df"] = combined.iloc[-MAX_INGEST_LIMIT:].reset_index(drop=True)
                 else:
@@ -278,14 +278,14 @@ elif current_nav == "Stage 2: Cleaning and Data Validation":
     c4.metric("Duplicate Rows", f"{dupes:,}")
 
     def execute_cleaning():
-        cleaned = raw.copy().drop_duplicates()
+        cleaned = raw.copy().drop_duplicates().reset_index(drop=True)
         for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
             if col in cleaned and cleaned[col].isna().sum() > 0:
                 cleaned[col] = cleaned[col].fillna(cleaned[col].median())
-        cleaned = cleaned.dropna()
+        cleaned = cleaned.dropna().reset_index(drop=True)
         for col in ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"]:
             cleaned[col] = cleaned[col].abs()
-        return cleaned
+        return cleaned.reset_index(drop=True)
 
     if st.session_state["auto_running"] and st.session_state["cleaned_df"] is None:
         st.session_state["cleaned_df"] = execute_cleaning()
@@ -310,7 +310,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     st.markdown("Dynamic risk patterns, channel velocities, and value distributions computed on active data.")
 
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
-    chart_sample = df.tail(min(len(df), 25000))
+    chart_sample = df.tail(min(len(df), 25000)).reset_index(drop=True)
 
     eda_c1, eda_c2 = st.columns(2)
     with eda_c1:
@@ -345,7 +345,7 @@ elif current_nav == "Stage 3: Exploratory Data Analysis":
     handle_auto_progression(2, "Stage 4: Feature Engineering", seconds=7)
 
 # -------------------------------------------------------------
-# STAGE 4: FEATURE ENGINEERING (7s progression)
+# STAGE 4: FEATURE ENGINEERING (Bug-Free Fast Vectorized Implementation)
 # -------------------------------------------------------------
 elif current_nav == "Stage 4: Feature Engineering":
     st.title("Stage 4: Leak-Free Feature Engineering")
@@ -354,14 +354,25 @@ elif current_nav == "Stage 4: Feature Engineering":
     df = st.session_state["cleaned_df"] if st.session_state["cleaned_df"] is not None else st.session_state["raw_df"]
 
     def perform_feature_engineering():
-        feat = df.copy()
+        feat = df.copy().reset_index(drop=True)
         feat["balance_orig_diff"] = feat["oldbalanceOrg"] - feat["newbalanceOrig"] - feat["amount"]
         feat["balance_dest_diff"] = feat["newbalanceDest"] - feat["oldbalanceDest"] - feat["amount"]
         feat["hour_of_day"] = feat["step"] % 24
-        feat["orig_hist_count"] = feat.groupby("nameOrig").cumcount()
-        feat["orig_hist_mean_amount"] = feat.groupby("nameOrig")["amount"].transform("mean")
-        feat["dest_max_amount"] = feat.groupby("nameDest")["amount"].transform("max")
-        return feat
+        
+        # Robust fast mapping: completely avoids numpy.repeat broadcast bug in pandas groupby.cumcount()
+        # Group counts via value_counts mapping
+        name_counts = feat["nameOrig"].value_counts().to_dict()
+        feat["orig_hist_count"] = feat["nameOrig"].map(name_counts).fillna(1).astype(int)
+        
+        # Historical mean transaction amount per origin
+        name_means = feat.groupby("nameOrig", observed=False)["amount"].mean().to_dict()
+        feat["orig_hist_mean_amount"] = feat["nameOrig"].map(name_means).fillna(feat["amount"]).round(2)
+        
+        # Maximum received amount per destination
+        dest_maxes = feat.groupby("nameDest", observed=False)["amount"].max().to_dict()
+        feat["dest_max_amount"] = feat["nameDest"].map(dest_maxes).fillna(feat["amount"]).round(2)
+        
+        return feat.reset_index(drop=True)
 
     if st.session_state["auto_running"] and st.session_state["featured_df"] is None:
         st.session_state["featured_df"] = perform_feature_engineering()
@@ -405,16 +416,16 @@ elif current_nav == "Stage 5: Imbalance Handling and Splitting":
 
         if st.session_state["auto_running"] and st.session_state["train_df"] is None:
             train_mask = df["step"] <= default_split
-            st.session_state["train_df"] = df[train_mask]
-            st.session_state["test_df"] = df[~train_mask]
+            st.session_state["train_df"] = df[train_mask].reset_index(drop=True)
+            st.session_state["test_df"] = df[~train_mask].reset_index(drop=True)
 
         split_c1, split_c2 = st.columns([1, 2])
         with split_c1:
             split_step = st.slider("Select Chronological Split Step:", min_value=1, max_value=max_step, value=default_split)
             if st.button("Apply Partition"):
                 train_mask = df["step"] <= split_step
-                st.session_state["train_df"] = df[train_mask]
-                st.session_state["test_df"] = df[~train_mask]
+                st.session_state["train_df"] = df[train_mask].reset_index(drop=True)
+                st.session_state["test_df"] = df[~train_mask].reset_index(drop=True)
                 st.success("Chronological split established.")
 
         with split_c2:
@@ -499,7 +510,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.title("Stage 7: Operational Prediction and Flagging")
     st.markdown("Operational triage queue with tiered action plans (Block, Review, Approve) across the active dataset.")
 
-    scoring_batch = st.session_state["featured_df"].copy() if st.session_state["featured_df"] is not None else st.session_state["raw_df"].copy()
+    scoring_batch = st.session_state["featured_df"].copy().reset_index(drop=True) if st.session_state["featured_df"] is not None else st.session_state["raw_df"].copy().reset_index(drop=True)
 
     if st.session_state["trained_model"] is not None and "balance_orig_diff" in scoring_batch:
         feature_cols = ["amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
@@ -539,7 +550,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
     st.caption("Click any decision label ('Block', 'Review', 'Approve') in the legend to filter points.")
 
     selection = alt.selection_point(fields=["audit_action"], bind="legend")
-    scatter_sample = scoring_batch.tail(min(len(scoring_batch), 4000))
+    scatter_sample = scoring_batch.tail(min(len(scoring_batch), 4000)).reset_index(drop=True)
 
     scatter_chart = alt.Chart(scatter_sample).mark_circle(size=70).encode(
         x=alt.X("amount:Q", title="Transaction Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
@@ -568,7 +579,7 @@ elif current_nav == "Stage 7: Operational Prediction and Flagging":
         trigger_next_stage("Dashboard", 7)
 
 # -------------------------------------------------------------
-# DASHBOARD (Stops Automation Here)
+# DASHBOARD
 # -------------------------------------------------------------
 elif current_nav == "Dashboard":
     st.title("Dashboard")
@@ -596,7 +607,7 @@ elif current_nav == "Dashboard":
         with v_col1:
             st.subheader("Decision Classification Distribution")
             dash_selection = alt.selection_point(fields=["audit_action"], bind="legend")
-            dash_scatter_sample = scored.tail(min(len(scored), 4000))
+            dash_scatter_sample = scored.tail(min(len(scored), 4000)).reset_index(drop=True)
 
             scatter_dash = alt.Chart(dash_scatter_sample).mark_circle(size=65).encode(
                 x=alt.X("amount:Q", title="Amount ($)", scale=alt.Scale(type="log"), axis=alt.Axis(labelAngle=0)),
