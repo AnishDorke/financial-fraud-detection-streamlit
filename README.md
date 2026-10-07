@@ -1,30 +1,30 @@
 # Real-Time Financial Fraud Detection System (LightGBM & Streamlit)
 
-[![Pipeline CI](https://github.com/AnishDorke/financial-fraud-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/AnishDorke/financial-fraud-detection/actions/workflows/ci.yml)
+[![Pipeline CI](https://github.com/AnishDorke/financial-fraud-detection/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AnishDorke/financial-fraud-detection/actions/workflows/ci.yml)
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://aws-financial-fraud-detection.streamlit.app/)
 
-🔗 **Live Interactive Dashboard:** [https://aws-financial-fraud-detection.streamlit.app/](https://aws-financial-fraud-detection.streamlit.app/)
+Interactive Application URL: https://aws-financial-fraud-detection.streamlit.app/
 
 An end-to-end, leak-free machine learning platform built to detect fraudulent financial transactions in real time, featuring calibrated operational alert budgets for Security Operations Center (SOC) review teams and an interactive Streamlit investigation portal.
 
 ---
 
-## 📌 Project Overview
+## Project Overview
 
-Financial transaction systems face extreme class imbalance and subtle temporal fraud mechanics, such as rapid mule cash-outs and account draining. Naive machine learning systems frequently suffer from future data leakage when aggregating rolling customer behavior.
+Financial transaction systems face extreme class imbalance and subtle temporal fraud mechanics, such as rapid mule cash-outs and account draining. Machine learning systems in this domain often suffer from lookahead data leakage when aggregating rolling customer behavior.
 
-This project implements:
-1. **Leak-Free Historical Windowing (V3.1):** Computes customer spending profiles strictly up to transaction time $t-1$, ensuring zero lookahead leakage into history buffers.
-2. **Feature Ablation Benchmarking:** Quantifies the uplift of historical receiver ceilings (`dest_max_amount`) against point-in-time baseline features.
-3. **Operational Alert Budgeting:** Replaces arbitrary 0.5 decision thresholds with calibrated SOC triage tiers (0.1%, 0.5%, 1.0%) to optimize precision and prevent alert fatigue.
-4. **Interactive Streamlit Workspace:** Enables single-transaction screening, sequential batch audits, historical telemetry, and real-time inference streaming.
-5. **Unified Audit Suite (`run_pipeline.py`):** Runs end-to-end test harnesses validating schema constraints, temporal boundary integrity, prediction parity, and alert capacities.
+This platform implements:
+* **Leak-Free Historical Windowing (V3.1):** Computes customer spending profiles strictly up to transaction time $t-1$, ensuring zero lookahead leakage into history buffers.
+* **Feature Ablation Benchmarking:** Quantifies the uplift of historical receiver ceilings (`dest_max_amount`) against point-in-time baseline features.
+* **Operational Alert Budgeting:** Replaces standard 0.5 decision thresholds with calibrated triage tiers (0.1%, 0.5%, 1.0%) to optimize precision and mitigate investigator alert fatigue.
+* **Streamlit Analytical Workspace:** Delivers single-transaction screening, sequential batch audits, historical telemetry, and real-time inference streaming.
+* **Unified Audit Suite (`run_pipeline.py`):** Runs end-to-end test harnesses validating schema constraints, temporal boundary integrity, prediction parity, and alert capacities.
 
 ---
 
-## 📊 Model Performance & Feature Ablation
+## Model Performance and Feature Ablation
 
-Models were benchmarked on chronological out-of-time evaluation splits. Precision-Recall AUC (PR-AUC) serves as the primary optimization metric given class imbalance:
+Models were benchmarked on chronological out-of-time evaluation splits. Precision-Recall AUC (PR-AUC) serves as the primary optimization metric given target class scarcity:
 
 | Model Architecture | Feature Set | PR-AUC | ROC-AUC | Status |
 | :--- | :--- | :---: | :---: | :---: |
@@ -32,13 +32,13 @@ Models were benchmarked on chronological out-of-time evaluation splits. Precisio
 | Historical (No Receiver Max) | Ablated historical maximum receipt ceiling (`dest_max_amount`) | 0.841 | 0.992 | Ablation Test |
 | Point-in-Time Baseline | Current transaction attributes only | 0.723 | 0.981 | Baseline |
 
-> **Key Takeaway:** Incorporating leak-free historical behavioral metrics yields a **+0.161 (+22.3%) uplift in PR-AUC** over isolated transaction attributes.
+Incorporating leak-free historical behavioral metrics yields a +0.161 (+22.3%) uplift in PR-AUC over isolated transaction attributes.
 
 ---
 
-## 🎯 Operational Threshold & Alert Capacity
+## Operational Threshold and Alert Capacity
 
-Real-world fraud operations operate under strict human reviewer bandwidth. Decision thresholds are tuned against explicit transaction capacity budgets:
+Fraud investigation teams operate under fixed review bandwidth. Decision thresholds are calibrated against explicit operational capacity targets:
 
 | Review Volume Target | Threshold Cutoff | Precision | Recall (Fraud Caught) | Operational Action |
 | :--- | :---: | :---: | :---: | :--- |
@@ -49,18 +49,16 @@ Real-world fraud operations operate under strict human reviewer bandwidth. Decis
 
 ---
 
-## 🖥️ Streamlit Application Features
+## System Capabilities
 
-The interactive dashboard provides tools for both fraud analysts and ML engineers:
-
-* **Single Transaction Screening:** Interactive scoring form simulating incoming wire transfers with instant triage routing.
-* **Batch Feed Audits:** Real-time processing of high-volume transaction feeds with live throughput tracking.
-* **Temporal Inspection & Parity:** Visual distribution plots comparing training vs. inference feature drift.
-* **Triage Funnel Analytics:** Operational review breakdown visualising Approved, Queued, and Auto-Blocked volume.
+* **Transaction Screening:** Interactive scoring form evaluating transaction parameters with automated triage categorization.
+* **Batch Feed Audits:** Ingestion and scoring of transaction batches with live throughput calculation.
+* **Temporal Inspection and Parity:** Metric distribution tracking to monitor feature drift across partitions.
+* **Triage Analytics:** Breakdown visualising Approved, Queued for Review, and Automatically Blocked volume.
 
 ---
 
-## 🛠️ Repository Structure
+## Repository Structure
 
 ```text
 ├── .gitignore
