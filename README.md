@@ -1,6 +1,5 @@
 # Real-Time Financial Fraud Detection System (LightGBM & Streamlit)
 
-[![Pipeline CI](https://github.com/AnishDorke/financial-fraud-detection/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AnishDorke/financial-fraud-detection/actions/workflows/ci.yml)
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://aws-financial-fraud-detection.streamlit.app/)
 
 Interactive Application URL: https://aws-financial-fraud-detection.streamlit.app/
